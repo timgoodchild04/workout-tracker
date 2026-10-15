@@ -100,9 +100,10 @@ fn plate_plans() {
         let (cards, _) = coach::session_cards(&data, &engine, &a, &s);
         let (p, b) = workout_tracker_lib::plan::plans(&cards, &engine);
         assert!(b.moves <= p.moves);
-        eprintln!("\n{s}: programme {} moves, best {} moves", p.moves, b.moves);
+        eprintln!("\n{s}: programme {} moves (heaviest-first loading {}), best {} moves (heaviest-first {})", p.moves, p.naive_moves, b.moves, b.naive_moves);
+        assert!(p.moves <= p.naive_moves);
         for &i in &b.order {
-            eprintln!("  {:<28} {:<16} {}", cards[i].exercise, cards[i].recommended.split(" — ").next().unwrap(), b.changes[i].join(" | "));
+            eprintln!("  {:<28} {:<16} {}", cards[i].exercise, cards[i].recommended.split(" — ").next().unwrap(), b.changes[i].join("\n      "));
         }
     }
 }
