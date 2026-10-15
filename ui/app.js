@@ -168,11 +168,12 @@ function renderStatus() {
   if (st.rows_left != null && st.rows_left < 40)
     msgs.push(`The Workout Log has room for ${st.rows_left} more rows before its formulas run out. Extend the sheet's formulas soon.`);
   if (S.update?.latest)
-    msgs.push(`Version ${esc(S.update.latest)} is available. <a href="#" class="install-update">${S.update.installing ? "Updating…" : "Update and restart"}</a>`);
+    msgs.push(`Version ${esc(S.update.latest)} is available. ${updateAction(false)}`);
   notice.hidden = !msgs.length || S.tab === "settings";
   notice.className = "notice" + (st.online ? " info" : "");
   notice.innerHTML = msgs.join("<br>");
   $(".install-update", notice)?.addEventListener("click", installUpdate);
+  $$("a[data-url]", notice).forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); openUrl(a.dataset.url); }));
 }
 
 // ------------------------------------------------------------------ updates
@@ -189,6 +190,16 @@ async function checkUpdate(silent) {
     if (!silent) toast(`Couldn't check for updates: ${e}`);
   }
   render();
+}
+
+const RELEASES_URL = "https://github.com/timgoodchild04/workout-tracker/releases/latest";
+
+/** Update button/link; a .deb install can't replace itself, so it points at the release page. */
+function updateAction(button) {
+  if (!S.update.can_install)
+    return `<a href="#" data-url="${RELEASES_URL}">Download it from GitHub</a>`;
+  const label = S.update.installing ? "Updating…" : "Update and restart";
+  return button ? `<button class="btn primary install-update">${label}</button>` : `<a href="#" class="install-update">${label}</a>`;
 }
 
 async function installUpdate(e) {
@@ -574,9 +585,7 @@ function renderSettings(el) {
         S.update?.checking ? " · checking…" : S.update?.latest ? ` · <b>${esc(S.update.latest)} is available</b>` : S.update?.current && !S.update.error ? " · up to date" : ""}</p>
       ${S.update?.latest && S.update.notes ? `<p class="small muted" style="margin:0;white-space:pre-line">${esc(S.update.notes)}</p>` : ""}
       ${S.update?.error ? `<p class="small muted" style="margin:0">Last check failed: ${esc(S.update.error)}</p>` : ""}
-      <div>${S.update?.latest
-        ? `<button class="btn primary install-update">${S.update.installing ? "Updating…" : "Update and restart"}</button>`
-        : `<button class="btn" id="check-update">Check for updates</button>`}</div></div>
+      <div>${S.update?.latest ? updateAction(true) : `<button class="btn" id="check-update">Check for updates</button>`}</div></div>
     <p class="small muted" id="data-dir"></p>`;
 
   const showMode = () => {

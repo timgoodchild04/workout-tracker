@@ -67,8 +67,11 @@ To publish a release:
 
 1. Bump `version` in `src-tauri/tauri.conf.json` (and `Cargo.toml`, `package.json`).
 2. Commit, then tag and push: `git tag v0.3.0 && git push origin main v0.3.0`.
-3. The **Release** workflow builds a universal macOS app, signs the update and publishes the
-   release with `latest.json`. Nothing needs building locally.
+3. The **Release** workflow builds a universal macOS app and an Ubuntu AppImage + .deb, signs
+   the updates and publishes the release with `latest.json`. Nothing needs building locally.
+
+On Ubuntu, only the **AppImage** can update itself (`chmod +x` it and run it). A `.deb` install
+still checks for updates but links to the release page to download the next `.deb`.
 
 The update signing key lives outside the repo in `~/.tauri/workout-tracker.key` (password in
 `workout-tracker.key.password`) and in the repo's Actions secrets. Back it up: without it,

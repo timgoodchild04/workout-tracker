@@ -343,6 +343,8 @@ pub struct UpdateInfo {
     /// Newer version on GitHub, or None when this is the latest.
     latest: Option<String>,
     notes: String,
+    /// False where the app can't replace itself (a .deb install on Linux; only the AppImage can).
+    can_install: bool,
 }
 
 /// Ask GitHub Releases (the updater endpoint in tauri.conf.json) for a newer version.
@@ -355,6 +357,7 @@ async fn check_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
         current,
         latest: update.as_ref().map(|u| u.version.clone()),
         notes: update.and_then(|u| u.body).unwrap_or_default(),
+        can_install: !cfg!(target_os = "linux") || std::env::var_os("APPIMAGE").is_some(),
     })
 }
 
