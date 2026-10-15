@@ -110,3 +110,14 @@ fn plate_plans() {
         }
     }
 }
+
+#[test]
+fn schedule_morning_sessions_exist() {
+    let Ok(path) = std::env::var("WT_SNAPSHOT") else { return };
+    let data = snapshot::load(std::path::Path::new(&path)).unwrap();
+    let sessions = coach::sessions(&data);
+    for d in &data.schedule {
+        assert!(d.morning.is_empty() || sessions.contains(&d.morning), "{}: {} isn't a session on 💪 Workouts", d.day, d.morning);
+    }
+    eprintln!("morning: {:?}", data.schedule.iter().map(|d| d.morning.as_str()).collect::<Vec<_>>());
+}

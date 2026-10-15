@@ -13,11 +13,11 @@ pub const TAB_LOG: &str = "📝 Workout Log";
 /// Ranges the app reads. Rows/columns match the sheet's own named ranges.
 pub const RANGE_WORKOUTS: &str = "A5:L61";
 pub const RANGE_SETTINGS: &str = "A1:D100";
-pub const RANGE_SCHEDULE: &str = "B13:D19";
+pub const RANGE_SCHEDULE: &str = "B13:E19";
 pub const LOG_FIRST_ROW: usize = 2;
-/// The log's helper formulas are filled down to row 393 and the Dashboard
-/// lookups stop at row 384, so the sheet only "sees" entries up to here.
-pub const LOG_LAST_FORMULA_ROW: usize = 384;
+/// The log's helper formulas, and the Dashboard and Progress lookups, stop at
+/// row 2000, so the sheet only "sees" entries up to here.
+pub const LOG_LAST_FORMULA_ROW: usize = 2000;
 pub const RANGE_LOG: &str = "A2:H2000";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -124,6 +124,9 @@ pub struct SchedDay {
     pub day: String,
     pub session: String,
     pub notes: String,
+    /// Schedule column E: a second, short session due the same day ("" = none).
+    #[serde(default)]
+    pub morning: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,7 +186,7 @@ fn yes(c: &Cell) -> bool {
 }
 
 impl Data {
-    /// `settings` is A1:D100, `workouts` A5:L61, `schedule` B13:D19, `log` A2:H…
+    /// `settings` is A1:D100, `workouts` A5:L61, `schedule` B13:E19, `log` A2:H…
     pub fn from_grids(workouts: &Grid, settings: &Grid, schedule: &Grid, log: &Grid) -> Data {
         let s = |r: usize, c: usize| at(settings, r - 1, c); // 1-based sheet rows
         let num = |r: usize, c: usize, d: f64| s(r, c).num().unwrap_or(d);
@@ -248,6 +251,7 @@ impl Data {
                 day: at(schedule, i, 0).text(),
                 session: at(schedule, i, 1).text(),
                 notes: at(schedule, i, 2).text(),
+                morning: at(schedule, i, 3).text(),
             })
             .collect();
 

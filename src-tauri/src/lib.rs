@@ -337,6 +337,38 @@ async fn save_config(state: State<'_, AppState>, config: Config) -> Result<View,
     Ok(build_view(&state.0.lock().unwrap()))
 }
 
+#[derive(Serialize)]
+pub struct UpdateInfo {
+    current: String,
+    /// Newer version on GitHub, or None when this is the latest.
+    latest: Option<String>,
+    notes: String,
+}
+
+/// Ask GitHub Releases (the updater endpoint in tauri.conf.json) for a newer version.
+#[tauri::command]
+async fn check_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let current = app.package_info().version.to_string();
+    let update = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())?;
+    Ok(UpdateInfo {
+        current,
+        latest: update.as_ref().map(|u| u.version.clone()),
+        notes: update.and_then(|u| u.body).unwrap_or_default(),
+    })
+}
+
+/// Download the newer version, check its signature, replace the app and restart.
+/// Queued entries and typed-in reps are already saved to disk, so nothing is lost.
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let update = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())?;
+    let Some(update) = update else { return Err("You're already on the latest version.".into()) };
+    update.download_and_install(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
+    app.restart()
+}
+
 #[tauri::command]
 fn data_dir(state: State<'_, AppState>) -> String {
     state.0.lock().unwrap().dir.display().to_string()
@@ -347,6 +379,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
@@ -366,7 +399,7 @@ pub fn run() {
             })));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![load, save_entries, discard_pending, save_config, data_dir])
+        .invoke_handler(tauri::generate_handler![load, save_entries, discard_pending, save_config, data_dir, check_update, install_update])
         .run(tauri::generate_context!())
         .expect("error while running the app");
 }

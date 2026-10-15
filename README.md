@@ -14,6 +14,13 @@ sessions into it, and the sheet keeps working on its own exactly as before.
 | Programme | The 💪 Workouts tab, read-only, with kit that's switched off struck through. |
 | Settings | The connection, plus the plates, kit and coach rules read from ⚙️ Settings. |
 
+### Morning session
+
+Core and pull-up work is a short 🌅 Morning session, defined on 💪 Workouts like any other
+session. Column E of the Schedule tab says which days it's due (weekdays). On those days the
+Today screen opens on Morning until it's logged or it's past noon, then switches to the main
+session. The header shows whether Morning is done. Pick any session chip to override.
+
 ### Exercise order and plate stacking
 
 Plates stay on between sessions. Each session starts from what the previous one left on the bar and
@@ -42,12 +49,30 @@ sheet's Dashboard and Progress tabs update as if you'd typed the rows yourself. 
 writing, the app re-reads column C so two computers can't overwrite each other. Nothing
 else in the sheet is ever changed. Programme and settings changes are made in the sheet.
 
-The log formulas stop at row 384. The app warns you when fewer than 40 rows are left and
+The log formulas stop at row 2000. The app warns you when fewer than 40 rows are left and
 refuses to write past that row.
 
 If the sheet can't be reached, saved sessions are queued on that computer and sent on the
 next sync. You can also click the sync button, or just switch back to the window, and the
 app pulls in anything logged on another computer.
+
+## Updates
+
+Releases are published on GitHub (`timgoodchild04/workout-tracker`). The app checks for a newer
+version on launch and shows a banner, and **Settings → Updates** has a manual check. Updating
+downloads the new version, checks its signature against the public key in `tauri.conf.json`,
+replaces the app and restarts it. Queued entries and typed-in reps are kept.
+
+To publish a release:
+
+1. Bump `version` in `src-tauri/tauri.conf.json` (and `Cargo.toml`, `package.json`).
+2. Commit, then tag and push: `git tag v0.3.0 && git push origin main v0.3.0`.
+3. The **Release** workflow builds a universal macOS app, signs the update and publishes the
+   release with `latest.json`. Nothing needs building locally.
+
+The update signing key lives outside the repo in `~/.tauri/workout-tracker.key` (password in
+`workout-tracker.key.password`) and in the repo's Actions secrets. Back it up: without it,
+installed copies can't accept new updates and would need a manual reinstall.
 
 ## One-time Google setup
 

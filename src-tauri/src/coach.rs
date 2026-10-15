@@ -322,11 +322,13 @@ pub struct Today {
     pub notes: String,
     pub is_rest: bool,
     pub next_training_day: String,
+    /// Short session also due today, e.g. "🌅 Morning" ("" = none).
+    pub morning: String,
 }
 
 pub fn today(schedule: &[SchedDay], date: NaiveDate) -> Today {
     let wd = date.weekday().num_days_from_monday() as usize; // WEEKDAY(,2)-1
-    let day = schedule.get(wd).cloned().unwrap_or(SchedDay { day: String::new(), session: "Rest".into(), notes: String::new() });
+    let day = schedule.get(wd).cloned().unwrap_or(SchedDay { day: String::new(), session: "Rest".into(), notes: String::new(), morning: String::new() });
     // Schedule!C9: smallest positive days-ahead among non-Rest days.
     let next = (0..7)
         .filter(|&i| schedule.get(i).is_some_and(|d| d.session != "Rest"))
@@ -342,6 +344,7 @@ pub fn today(schedule: &[SchedDay], date: NaiveDate) -> Today {
         session: day.session,
         notes: day.notes,
         next_training_day: next,
+        morning: day.morning,
     }
 }
 
@@ -394,6 +397,8 @@ pub fn progress(data: &Data, engine: &Engine, analysis: &[Analysis]) -> Vec<Prog
             let current = match last {
                 None => "—".into(),
                 Some(_) if bw => "BW".into(),
+                // No longer in the programme and logged without a weight: the sheet shows a blank cell.
+                Some(i) if equipment.is_empty() && data.log[i].weight == 0.0 => String::new(),
                 Some(i) => kg(data.log[i].weight),
             };
             let best = if idx.is_empty() {

@@ -11,6 +11,7 @@ const S = {
   progressPick: null,
   historyFilter: "",
   busy: false,
+  update: null,         // { current, latest, notes } from check_update, plus checking / installing / error
   order: (() => { try { return localStorage.getItem("order") || "best"; } catch { return "best"; } })(),
 };
 
@@ -113,11 +114,27 @@ function setBusy(b) {
 function currentSession() {
   const v = S.view;
   if (S.session) return S.session;
-  // Already logged something on this date? Show that session, even off-schedule.
-  const done = v?.history?.find((h) => h.date === S.logDate);
-  if (done && v.sessions.some((x) => x.name === done.workout)) return done.workout;
-  if (v?.today && !v.today.is_rest && S.logDate === v.today.date) return v.today.session;
-  return v?.sessions?.[0]?.name ?? "";
+  if (!v) return "";
+  const has = (name) => !!name && v.sessions.some((x) => x.name === name);
+  const td = v.today;
+  const isToday = td && S.logDate === td.date;
+  const morning = isToday && has(td.morning) ? td.morning : "";
+  const main = isToday && !td.is_rest ? td.session : "";
+  const logged = v.history.filter((h) => h.date === S.logDate && has(h.workout)).map((h) => h.workout);
+  // Already logged a main session on this date? Show that one, even off-schedule.
+  const done = logged.find((w) => w !== morning);
+  if (done) return done;
+  // The morning session comes first until it's logged or it's past noon.
+  if (morning && !logged.includes(morning) && (new Date().getHours() < 12 || !main)) return morning;
+  return main || morning || logged[0] || v.sessions[0]?.name || "";
+}
+
+/** "🌅 Morning ✓" / "🌅 Morning not done yet" for the Today header ("" when none is due). */
+function morningNote(v) {
+  const td = v.today;
+  if (!td.morning || !v.sessions.some((s) => s.name === td.morning)) return "";
+  const done = v.history.some((h) => h.date === td.date && h.workout === td.morning);
+  return ` · ${esc(td.morning)} ${done ? "✓" : "not done yet"}`;
 }
 
 // ------------------------------------------------------------------ render
@@ -149,10 +166,44 @@ function renderStatus() {
   const msgs = [];
   if (st.message) msgs.push(esc(st.message));
   if (st.rows_left != null && st.rows_left < 40)
-    msgs.push(`The Workout Log has room for ${st.rows_left} more rows before its formulas run out (row 384). Extend the sheet's formulas soon.`);
+    msgs.push(`The Workout Log has room for ${st.rows_left} more rows before its formulas run out. Extend the sheet's formulas soon.`);
+  if (S.update?.latest)
+    msgs.push(`Version ${esc(S.update.latest)} is available. <a href="#" class="install-update">${S.update.installing ? "Updating…" : "Update and restart"}</a>`);
   notice.hidden = !msgs.length || S.tab === "settings";
   notice.className = "notice" + (st.online ? " info" : "");
   notice.innerHTML = msgs.join("<br>");
+  $(".install-update", notice)?.addEventListener("click", installUpdate);
+}
+
+// ------------------------------------------------------------------ updates
+// New versions are GitHub Releases; the updater checks their signature before installing.
+
+async function checkUpdate(silent) {
+  S.update = { ...S.update, checking: true, error: "" };
+  if (!silent) render();
+  try {
+    S.update = { ...(await invoke("check_update")), checking: false };
+    if (!silent && !S.update.latest) toast("You're on the latest version.");
+  } catch (e) {
+    S.update = { ...S.update, checking: false, error: String(e) };
+    if (!silent) toast(`Couldn't check for updates: ${e}`);
+  }
+  render();
+}
+
+async function installUpdate(e) {
+  e?.preventDefault();
+  if (S.update?.installing) return;
+  S.update = { ...S.update, installing: true };
+  render();
+  toast("Downloading the update. The app restarts when it's done.");
+  try {
+    await invoke("install_update");
+  } catch (err) {
+    S.update = { ...S.update, installing: false };
+    toast(`Update failed: ${err}`);
+    render();
+  }
 }
 
 function setupNeeded() {
@@ -174,16 +225,16 @@ function renderToday(el) {
     <h1>${esc(fmtDate(td.date, { weekday: "long", day: "numeric", month: "long" }))}</h1>
     <p class="sub">${td.is_rest
       ? `Rest day${td.notes ? " · " + esc(td.notes) : ""} · next training day is ${esc(td.next_training_day)}`
-      : `Scheduled: <b>${esc(td.session)}</b>${td.notes ? " · " + esc(td.notes) : ""}`}</p>`;
+      : `Scheduled: <b>${esc(td.session)}</b>${td.notes ? " · " + esc(td.notes) : ""}`}${morningNote(v)}</p>`;
 
   const chips = `<div class="chips" role="tablist">${v.sessions
     .map((s) => `<button class="chip ${s.name === session ? "active" : ""}" data-session="${esc(s.name)}" role="tab">${esc(s.name)}${
-      !td.is_rest && s.name === td.session ? '<span class="today-dot" title="Scheduled today"></span>' : ""}</button>`)
+      (!td.is_rest && s.name === td.session) || s.name === td.morning ? '<span class="today-dot" title="Scheduled today"></span>' : ""}</button>`)
     .join("")}</div>`;
 
-  const off = !td.is_rest && session !== td.session
+  const off = !td.is_rest && session !== td.session && session !== td.morning
     ? `<p class="small muted">You're looking at a different session from your schedule. <a href="#" id="back-to-schedule">Back to ${esc(td.session)}</a></p>` : "";
-  const rest = td.is_rest && !S.session
+  const rest = td.is_rest && !S.session && session !== td.morning
     ? `<div class="rest"><h3>Rest day</h3><p class="muted" style="margin:0">Nothing scheduled. Pick a session above if you're training anyway.</p></div>` : "";
 
   const pp = sv.programme_plan, bp = sv.best_plan;
@@ -518,6 +569,14 @@ function renderSettings(el) {
         ${set.equipment.map((e) => `<tr><td>${esc(e.name)}</td><td>${esc(e.load_type)}</td><td>${e.enabled ? "Yes" : '<span class="muted">No</span>'}</td></tr>`).join("")}
       </tbody></table></div>
       <p class="small muted" style="margin:0">Change these in the sheet. The app reads them on every sync.</p></div>` : ""}
+    <div class="panel"><h3>Updates</h3>
+      <p class="muted" style="margin:0">${S.update?.current ? `Version ${esc(S.update.current)}` : "Version unknown"}${
+        S.update?.checking ? " · checking…" : S.update?.latest ? ` · <b>${esc(S.update.latest)} is available</b>` : S.update?.current && !S.update.error ? " · up to date" : ""}</p>
+      ${S.update?.latest && S.update.notes ? `<p class="small muted" style="margin:0;white-space:pre-line">${esc(S.update.notes)}</p>` : ""}
+      ${S.update?.error ? `<p class="small muted" style="margin:0">Last check failed: ${esc(S.update.error)}</p>` : ""}
+      <div>${S.update?.latest
+        ? `<button class="btn primary install-update">${S.update.installing ? "Updating…" : "Update and restart"}</button>`
+        : `<button class="btn" id="check-update">Check for updates</button>`}</div></div>
     <p class="small muted" id="data-dir"></p>`;
 
   const showMode = () => {
@@ -544,6 +603,8 @@ function renderSettings(el) {
     setBusy(false);
     render();
   });
+  $("#check-update")?.addEventListener("click", () => checkUpdate(false));
+  $(".install-update", el)?.addEventListener("click", installUpdate);
   $("#discard")?.addEventListener("click", async () => {
     if (!confirm("Discard the queued entries? They haven't been saved to the sheet.")) return;
     S.view = await invoke("discard_pending");
@@ -566,3 +627,4 @@ window.addEventListener("resize", () => { if (S.tab === "progress") render(); })
 window.addEventListener("focus", () => { if (S.view?.status?.mode === "sheets" && !S.busy) load(true); });
 
 load(false);
+checkUpdate(true);
