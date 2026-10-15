@@ -262,20 +262,37 @@ fn ease_back_warmups_and_pbs() {
     eprintln!("{} PBs in {} entries", pbs.iter().filter(|&&p| p).count(), pbs.len());
 }
 
-/// Rotation mode on the real log: next up is the day after the last main session.
+/// Rotation: rounds of all four days; a skipped day stays owed and comes next.
 #[test]
-fn rotation_follows_the_last_session() {
+fn rotation_keeps_skipped_days_owed() {
     let Ok(path) = std::env::var("WT_SNAPSHOT") else { return };
     let mut data = snapshot::load(std::path::Path::new(&path)).unwrap();
     let d = |m, day| chrono::NaiveDate::from_ymd_opt(2026, m, day).unwrap();
-    assert_eq!(coach::today_for(&data, d(10, 16)).rotation, false, "weekday schedule by default");
+    assert!(!coach::today_for(&data, d(10, 16)).rotation, "weekday schedule by default");
     data.session_order = workout_tracker_lib::model::ROTATION.into();
-    for (date, want) in [(d(10, 16), "🦵 Day 3 — Legs"), (d(10, 13), "🐺 Day 2 — Pull"), (d(8, 1), "🦾 Day 1 — Push")] {
-        let t = coach::today_for(&data, date);
-        assert!(t.rotation && !t.is_rest);
-        assert_eq!(t.session, want, "{date}: {}", t.notes);
-        eprintln!("{date}: {} ({})", t.session, t.notes);
+    let real = coach::today_for(&data, d(10, 16));
+    eprintln!("real log, 16 Oct: {} ({})", real.session, real.notes);
+    assert_eq!(real.morning, "🌅 Morning", "Morning keeps its weekday slot");
+
+    let (push, pull, legs, upper) = ("🦾 Day 1 — Push", "🐺 Day 2 — Pull", "🦵 Day 3 — Legs", "💪 Day 4 — Upper");
+    let entry = |day: u32, w: &str| workout_tracker_lib::model::LogEntry {
+        date: d(11, day), workout: w.into(), exercise: "x".into(), weight: 0.0, sets: [Some(1.0), None, None, None], row: None, queued: false,
+    };
+    let next_after = |data: &mut workout_tracker_lib::model::Data, done: &[(u32, &str)]| {
+        data.log = done.iter().map(|(day, w)| entry(*day, w)).collect();
+        coach::today_for(data, d(11, 30))
+    };
+    for (done, want, owed) in [
+        (vec![], push, false),
+        (vec![(1, push), (2, pull)], legs, false),
+        (vec![(1, push), (2, pull), (3, upper)], legs, true),               // skipped Legs: still owed
+        (vec![(1, push), (2, pull), (3, upper), (4, legs)], push, false),   // round complete
+        (vec![(1, push), (3, upper)], pull, true),                          // two owed: first in order
+        (vec![(1, push), (3, upper), (4, pull)], legs, true),
+        (vec![(1, push), (2, push), (3, pull)], legs, false),               // a repeat doesn't count twice
+    ] {
+        let t = next_after(&mut data, &done);
+        assert_eq!((t.session.as_str(), t.owed), (want, owed), "after {done:?}: {}", t.notes);
+        eprintln!("after {:?}: {} — {}", done.iter().map(|(_, w)| w.rsplit(" — ").next().unwrap()).collect::<Vec<_>>(), t.session, t.notes);
     }
-    // Morning keeps its weekday slot in rotation mode.
-    assert_eq!(coach::today_for(&data, d(10, 16)).morning, "🌅 Morning");
 }

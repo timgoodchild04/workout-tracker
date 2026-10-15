@@ -433,37 +433,73 @@ pub struct Today {
     pub morning: String,
     /// Following the rotation rather than the weekday schedule.
     pub rotation: bool,
+    /// Rotation only: today's session was skipped earlier this round and is still owed.
+    pub owed: bool,
 }
 
-/// Today's session in rotation mode: the day after the last main session logged
-/// before `date`, in the Days table's order (Morning-focus days aren't in the
-/// rotation; they keep their weekday slot). Nothing logged yet = the first day.
-pub fn rotation_next(data: &Data, date: NaiveDate) -> Option<(String, Option<(String, NaiveDate)>)> {
+/// Where the rotation stands before `date`. The days (Days table order, Morning-focus
+/// days left out; they keep their weekday slot) are done in rounds: a round ends once
+/// every day has been done at least once, in any order. Next up is the first day, in
+/// order, not yet done this round, so a day you skip stays owed until you do it and
+/// everything after it shifts back.
+#[derive(Debug, Clone, Serialize)]
+pub struct Rotation {
+    pub next: String,
+    /// Each day in order and whether it's been done this round.
+    pub round: Vec<(String, bool)>,
+    /// Days done this round that come after `next` in the order (done ahead of it).
+    pub ahead: Vec<String>,
+    /// The last main session logged before `date`.
+    pub last: Option<(String, NaiveDate)>,
+}
+
+pub fn rotation(data: &Data, date: NaiveDate) -> Option<Rotation> {
     let mut order: Vec<String> = data.days.iter().filter(|d| d.focus != "Morning").map(|d| d.name.clone()).collect();
     if order.is_empty() {
         order = sessions(data).into_iter().filter(|s| data.focus(s) != "Morning").collect();
     }
-    let first = order.first()?.clone();
-    let last = data.log.iter().filter(|e| e.date < date && order.contains(&e.workout)).max_by_key(|e| e.date);
-    Some(match last {
-        None => (first, None),
-        Some(e) => {
-            let i = order.iter().position(|d| d == &e.workout).unwrap();
-            (order[(i + 1) % order.len()].clone(), Some((e.workout.clone(), e.date)))
+    if order.is_empty() {
+        return None;
+    }
+    // Sessions in the order they were logged (log order within a day).
+    let mut done: Vec<String> = Vec::new();
+    let mut last = None;
+    let mut entries: Vec<(NaiveDate, usize)> = (0..data.log.len()).filter(|&i| data.log[i].date < date && order.contains(&data.log[i].workout)).map(|i| (data.log[i].date, i)).collect();
+    entries.sort();
+    for (d, i) in entries {
+        let w = &data.log[i].workout;
+        if !done.contains(w) {
+            done.push(w.clone());
         }
-    })
+        last = Some((w.clone(), d));
+        if order.iter().all(|o| done.contains(o)) {
+            done.clear();
+        }
+    }
+    let next = order.iter().find(|o| !done.contains(o)).unwrap().clone();
+    let pos = order.iter().position(|o| *o == next).unwrap();
+    let ahead = order[pos + 1..].iter().filter(|o| done.contains(o)).cloned().collect();
+    let round = order.iter().map(|o| (o.clone(), done.contains(o))).collect();
+    Some(Rotation { next, round, ahead, last })
 }
 
 /// Today's session, by weekday or by rotation as 📅 Plan's Session order says.
 pub fn today_for(data: &Data, date: NaiveDate) -> Today {
     let mut t = today(&data.schedule, date);
     if data.session_order == crate::model::ROTATION {
-        if let Some((next, last)) = rotation_next(data, date) {
-            t.notes = match last {
-                Some((s, d)) => format!("Next in your rotation (last: {} on {})", s, d.format("%a %-d %b")),
-                None => "First in your rotation".into(),
+        if let Some(r) = rotation(data, date) {
+            let short = |d: &str| d.rsplit(" — ").next().unwrap_or(d).to_string();
+            let progress = r.round.iter().map(|(d, done)| format!("{}{}", short(d), if *done { " ✓" } else if *d == r.next && !r.ahead.is_empty() { " (owed)" } else { "" })).collect::<Vec<_>>().join(" · ");
+            t.notes = if !r.ahead.is_empty() {
+                format!("{} is owed: you did {} ahead of it this round. This round: {}", short(&r.next), r.ahead.iter().map(|d| short(d)).collect::<Vec<_>>().join(" and "), progress)
+            } else {
+                match &r.last {
+                    Some((s, d)) => format!("Next in your rotation (last: {} on {}). This round: {}", short(s), d.format("%a %-d %b"), progress),
+                    None => format!("First in your rotation. This round: {progress}"),
+                }
             };
-            t.session = next;
+            t.owed = !r.ahead.is_empty();
+            t.session = r.next;
             t.is_rest = false;
             t.rotation = true;
         }
@@ -491,6 +527,7 @@ pub fn today(schedule: &[SchedDay], date: NaiveDate) -> Today {
         next_training_day: next,
         morning: day.morning,
         rotation: false,
+        owed: false,
     }
 }
 

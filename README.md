@@ -50,9 +50,12 @@ used; it keeps its name only so app versions before 0.3.0 still sync until they 
   total reps at the heaviest weight; bodyweight: more total reps or seconds) gets a 🏆 PB on
   its card and in History.
 - **Session order.** By default Today follows the Schedule tab's weekdays. Set *Session order*
-  to *Rotation* (Settings → Plan, or 📅 Plan S2) and Today offers the day after your last main
-  session instead, in the Days table's order, whatever the weekday. Morning still follows
-  the weekday schedule.
+  to *Rotation* (Settings → Plan, or 📅 Plan S2) and the days are done in **rounds**, in the
+  Days table's order, whatever the weekday: next up is the first day not yet done this
+  round. A day you skip stays owed and stays next up until you do it, and everything after
+  it shifts back; the round ends once every day is done. The header shows the round
+  (e.g. "Push ✓ · Pull ✓ · Legs (owed) · Upper ✓"), and opening another session while one is
+  owed says so. Morning still follows the weekday schedule.
 
 ### Morning session
 

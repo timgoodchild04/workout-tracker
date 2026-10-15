@@ -243,7 +243,9 @@ function renderToday(el) {
     .join("")}</div>`;
 
   const off = !td.is_rest && session !== td.session && session !== td.morning
-    ? `<p class="small muted">You're looking at a different session from your schedule. <a href="#" id="back-to-schedule">Back to ${esc(td.session)}</a></p>` : "";
+    ? td.rotation
+      ? `<p class="owed-note">${esc(td.session)} is next up${td.owed ? " and still owed from this round" : ""}. Doing this instead leaves it waiting: it stays next up until it's done. <a href="#" id="back-to-schedule">Back to ${esc(td.session)}</a></p>`
+      : `<p class="small muted">You're looking at a different session from your schedule. <a href="#" id="back-to-schedule">Back to ${esc(td.session)}</a></p>` : "";
   const rest = td.is_rest && !S.session && session !== td.morning
     ? `<div class="rest"><h3>Rest day</h3><p class="muted" style="margin:0">Nothing scheduled. Pick a session above if you're training anyway.</p></div>` : "";
 

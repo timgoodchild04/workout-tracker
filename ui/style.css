@@ -243,3 +243,4 @@ h2 { font-size: 18px; margin: 28px 0 4px; }
 tr:hover .hist-actions .icon-btn { opacity: 1; }
 tr.editing input[type=number] { width: 4.2em; margin-right: 4px; }
 .row-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.owed-note { font-size: 13px; margin: 0 0 12px; padding: 8px 10px; border-radius: 8px; background: var(--warn-bg); color: var(--text); }
