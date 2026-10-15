@@ -13,6 +13,8 @@ pub const TAB_LOG: &str = "📝 Workout Log";
 /// Ranges the app reads. Rows/columns match the sheet's own named ranges.
 pub const RANGE_WORKOUTS: &str = "A5:U61";
 pub const WORKOUTS_FIRST_ROW: usize = 5;
+/// Last 💪 Workouts row the sheet's formulas and lookups cover (A5:A61).
+pub const WORKOUTS_LAST_ROW: usize = 61;
 /// 💪 Workouts column the app writes Yes/No into to switch an exercise on or off.
 pub const COL_EXERCISE_ON: &str = "U";
 /// ⚙️ Settings column holding each piece of equipment's Enabled? Yes/No.

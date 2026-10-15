@@ -49,3 +49,19 @@ fn log_row_update_is_guarded() {
         eprintln!("row {:?} {} rewritten unchanged; mismatch refused: {err}", last.row, last.exercise);
     });
 }
+
+/// Opt-in: adding an exercise never overwrites a row that's in use. Writes nothing.
+#[test]
+#[ignore]
+fn programme_row_write_needs_an_empty_row() {
+    let key = std::env::var("WT_KEY").expect("set WT_KEY to the service-account key file");
+    let client = sheets::Client::new(std::path::Path::new(&key), DEFAULT_SHEET_ID).unwrap();
+    tauri::async_runtime::block_on(async {
+        let data = client.fetch().await.unwrap();
+        let used = data.programme[0].row;
+        let err = client.write_programme_row(used, vec![serde_json::json!("x"); 12], "Yes").await.unwrap_err();
+        let after = client.fetch().await.unwrap();
+        assert_eq!(after.programme[0].exercise, data.programme[0].exercise);
+        eprintln!("row {used} ({}) in use: refused: {err}", data.programme[0].exercise);
+    });
+}

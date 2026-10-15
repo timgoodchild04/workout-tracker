@@ -164,6 +164,32 @@ impl Client {
         Ok(())
     }
 
+    /// Fill an empty 💪 Workouts row: A:L (the exercise) and U (Exercise on?). The row is
+    /// re-read first and must still be empty, so nothing typed into the sheet since the
+    /// last sync gets overwritten.
+    pub async fn write_programme_row(&self, row: usize, a_to_l: Vec<Value>, on: &str) -> Result<()> {
+        let got = self.batch_get(&[q(TAB_WORKOUTS, &format!("A{row}:B{row}"))], "UNFORMATTED_VALUE").await?;
+        if got.first().and_then(|g| g.first()).is_some_and(|r| r.iter().any(|c| !c.is_empty())) {
+            bail!("row {row} of 💪 Workouts isn't empty any more. Sync and try again.");
+        }
+        let body = json!({
+            "valueInputOption": "USER_ENTERED",
+            "data": [
+                { "range": q(TAB_WORKOUTS, &format!("A{row}:L{row}")), "values": [a_to_l] },
+                { "range": q(TAB_WORKOUTS, &format!("{COL_EXERCISE_ON}{row}")), "values": [[on]] },
+            ],
+        });
+        let res = self
+            .http
+            .post(format!("{API}/{}/values:batchUpdate", self.sheet_id))
+            .bearer_auth(self.token().await?)
+            .json(&body)
+            .send()
+            .await?;
+        Self::check(res).await?;
+        Ok(())
+    }
+
     /// Overwrite A:H of an already-logged row with an edited entry. The row is
     /// re-read first and must still hold the same date and exercise, so an edit
     /// never lands on a row that moved or was replaced since the last sync.

@@ -584,14 +584,15 @@ function renderProgramme(el) {
   const on = (name) => v.settings.equipment.some((e) => e.name === name && e.enabled);
   let html = `<h1>Programme</h1><p class="sub">Read from the sheet's 💪 Workouts tab. Edit exercises, sets and alternatives there; the app picks changes up on the next sync. Switch exercises and kit on or off in Settings.</p>
     <div class="table-wrap"><table><thead><tr><th>Exercise</th><th>Sets × reps</th><th>Equipment</th><th class="num">Start</th><th>Alternative</th></tr></thead><tbody>`;
-  let group = "";
-  for (const p of v.programme) {
-    if (p.workout !== group) { group = p.workout; html += `<tr class="group"><td colspan="5">${esc(group)}</td></tr>`; }
-    const mainOn = on(p.equipment);
-    html += `<tr><td class="${p.enabled ? "" : "off"}">${p.video ? `<a href="#" data-url="${esc(p.video)}">${esc(p.exercise)}</a>` : esc(p.exercise)}</td>
-      <td>${p.sets} × ${num(p.rep_low)}–${num(p.rep_high)}</td>
-      <td class="${mainOn ? "" : "off"}">${esc(p.equipment)}</td><td class="num">${num(p.start_weight)}kg</td>
-      <td>${p.alt_exercise ? `${esc(p.alt_exercise)} <span class="small muted">(${esc(p.alt_equipment)}, ${num(p.alt_start_weight)}kg)</span>` : '<span class="muted">—</span>'}</td></tr>`;
+  for (const [day, rows] of byDay(v.programme)) {
+    html += `<tr class="group"><td colspan="5">${esc(day)}</td></tr>`;
+    for (const p of rows) {
+      const mainOn = on(p.equipment);
+      html += `<tr><td class="${p.enabled ? "" : "off"}">${p.video ? `<a href="#" data-url="${esc(p.video)}">${esc(p.exercise)}</a>` : esc(p.exercise)}</td>
+        <td>${p.sets} × ${num(p.rep_low)}–${num(p.rep_high)}</td>
+        <td class="${mainOn ? "" : "off"}">${esc(p.equipment)}</td><td class="num">${num(p.start_weight)}kg</td>
+        <td>${p.alt_exercise ? `${esc(p.alt_exercise)} <span class="small muted">(${esc(p.alt_equipment)}, ${num(p.alt_start_weight)}kg)</span>` : '<span class="muted">—</span>'}</td></tr>`;
+    }
   }
   el.innerHTML = html + `</tbody></table></div>`;
   $$("a[data-url]", el).forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); openUrl(a.dataset.url); }));
@@ -605,18 +606,48 @@ function toggle(attrs, on, label) {
   return `<label class="switch"><input type="checkbox" ${attrs} ${on ? "checked" : ""} ${live && !S.busy ? "" : "disabled"} aria-label="${esc(label)}"><span></span></label>`;
 }
 
+/** Programme rows grouped by day, days in programme order (rows added later sit with their day). */
+function byDay(programme) {
+  const days = new Map();
+  for (const p of programme) {
+    if (!days.has(p.workout)) days.set(p.workout, []);
+    days.get(p.workout).push(p);
+  }
+  return days;
+}
+
+/** Exercises defined anywhere in the programme (own row or as an alternative) that aren't on `rows`' day. */
+function addable(v, rows) {
+  const onDay = new Set(rows.flatMap((p) => [p.exercise, p.alt_exercise].filter(Boolean)));
+  const kit = new Map();
+  for (const p of v.programme) {
+    if (!kit.has(p.exercise)) kit.set(p.exercise, p.equipment);
+    if (p.alt_exercise && !kit.has(p.alt_exercise)) kit.set(p.alt_exercise, p.alt_equipment);
+  }
+  return [...kit].filter(([name]) => !onDay.has(name)).sort(([a], [b]) => a.localeCompare(b));
+}
+
 function exerciseRows(v) {
   const kitOn = (name) => v.settings.equipment.some((e) => e.name === name && e.enabled);
-  let html = "", group = "";
-  for (const p of v.programme) {
-    if (p.workout !== group) { group = p.workout; html += `<tr class="group"><td colspan="3">${esc(group)}</td></tr>`; }
-    const note = !p.enabled ? "" : kitOn(p.equipment) ? ""
-      : p.alt_exercise && kitOn(p.alt_equipment) ? ` <span class="small muted">(kit off, using ${esc(p.alt_exercise)})</span>`
-      : ' <span class="small muted">(kit off, dropped)</span>';
-    html += `<tr><td class="${p.enabled ? "" : "off"}">${esc(p.exercise)}${note}</td><td>${esc(p.equipment)}</td>
-      <td>${toggle(`data-ex-row="${p.row}" data-name="${esc(p.exercise)}"`, p.enabled, `${p.exercise} on`)}</td></tr>`;
+  const live = v.status.mode === "sheets" && v.status.online;
+  let html = "";
+  for (const [day, rows] of byDay(v.programme)) {
+    html += `<tr class="group"><td colspan="3">${esc(day)}</td></tr>`;
+    for (const p of rows) html += exerciseRow(p, kitOn);
+    const options = addable(v, rows)
+      .map(([name, eq]) => `<option value="${esc(name)}">${esc(name)} (${esc(eq)}${kitOn(eq) ? "" : ", kit off"})</option>`).join("");
+    html += `<tr><td colspan="3"><select class="add-exercise" data-day="${esc(day)}" aria-label="Add an exercise to ${esc(day)}" ${live && !S.busy && options ? "" : "disabled"}>
+      <option value="">${options ? "Add an exercise…" : "Nothing else to add"}</option>${options}</select></td></tr>`;
   }
   return html;
+}
+
+function exerciseRow(p, kitOn) {
+  const note = !p.enabled ? "" : kitOn(p.equipment) ? ""
+    : p.alt_exercise && kitOn(p.alt_equipment) ? ` <span class="small muted">(kit off, using ${esc(p.alt_exercise)})</span>`
+    : ' <span class="small muted">(kit off, dropped)</span>';
+  return `<tr><td class="${p.enabled ? "" : "off"}">${esc(p.exercise)}${note}</td><td>${esc(p.equipment)}</td>
+    <td>${toggle(`data-ex-row="${p.row}" data-name="${esc(p.exercise)}"`, p.enabled, `${p.exercise} on`)}</td></tr>`;
 }
 
 /** Write a switch to the sheet; on failure put it back and say why. */
@@ -713,7 +744,7 @@ function renderSettings(el) {
           <td>${toggle(`data-equip-row="${e.row}" data-name="${esc(e.name)}"`, e.enabled, `${e.name} on`)}</td></tr>`).join("")}
       </tbody></table></div></div>
     <div class="panel"><h3>Exercises</h3>
-      <p class="small muted" style="margin:0">Switch an exercise off to drop it from its session. Its history is kept, and switching it back on picks up where you left off.</p>
+      <p class="small muted" style="margin:0">Switch an exercise off to drop it from its session. Its history is kept, and switching it back on picks up where you left off. To put an exercise on another day, pick it from that day's "Add an exercise…" list: it's copied with its sets, reps, kit and video, and you can tweak it in the sheet.</p>
       <div class="table-wrap"><table><thead><tr><th>Exercise</th><th>Equipment</th><th>On</th></tr></thead><tbody>
         ${exerciseRows(v)}
       </tbody></table></div></div>` : ""}
@@ -727,6 +758,19 @@ function renderSettings(el) {
 
   $$("input[data-equip-row]", el).forEach((b) => b.addEventListener("change", () =>
     flip(b, "set_equipment", { row: +b.dataset.equipRow, name: b.dataset.name, enabled: b.checked })));
+  $$("select.add-exercise", el).forEach((sel) => sel.addEventListener("change", async () => {
+    const exercise = sel.value, workout = sel.dataset.day;
+    if (!exercise) return;
+    setBusy(true);
+    try {
+      S.view = await invoke("add_exercise", { workout, exercise });
+      toast(`${exercise} added to ${workout}.`);
+    } catch (e) {
+      toast(String(e), 6000);
+    }
+    setBusy(false);
+    render();
+  }));
   $$("input[data-ex-row]", el).forEach((b) => b.addEventListener("change", () =>
     flip(b, "set_exercise", { row: +b.dataset.exRow, exercise: b.dataset.name, enabled: b.checked })));
 

@@ -56,7 +56,12 @@ updates **that same row**, after re-reading it to check it still holds that date
 exercise. Clearing a saved card's boxes never deletes its row; delete it in the sheet.
 Saves go one at a time, and a sync never runs twice at once, so nothing is written twice.
 
-The only other writes are the on/off switches in **Settings**: an exercise's *Exercise on?*
+The other writes all come from **Settings**. Each day's *Add an exercise…* list puts an
+exercise that's defined elsewhere in the programme (its own row, or an alternative) onto that
+day: the app copies its sets, reps, kit, start weight, video and alternative into the first
+empty 💪 Workouts row (re-read first to check it's still empty), switched on. The new row sits
+at the bottom of the sheet but shows with its day everywhere; tweak it in the sheet like any
+other. Then there are the on/off switches: an exercise's *Exercise on?*
 (💪 Workouts column U) and a piece of kit's *Enabled?* (⚙️ Settings column B), one Yes/No
 cell per click. Before each one the app checks that the row still holds that exercise or kit,
 so a rearranged sheet is never written to the wrong row. Switching an exercise off drops it

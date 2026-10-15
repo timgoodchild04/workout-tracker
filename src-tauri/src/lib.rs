@@ -426,6 +426,31 @@ mod tests {
         }
     }
 
+    fn prog(workout: &str, ex: &str, eq: &str, alt: &str, alt_eq: &str, row: usize) -> ProgRow {
+        ProgRow {
+            workout: workout.into(), exercise: ex.into(), sets: 3, rep_low: 8.0, rep_high: 12.0, start_weight: 15.0,
+            equipment: eq.into(), video: format!("https://v/{ex}"), alt_exercise: alt.into(), alt_equipment: alt_eq.into(),
+            alt_start_weight: 10.0, alt_video: if alt.is_empty() { String::new() } else { format!("https://v/{alt}") }, enabled: true, row,
+        }
+    }
+
+    #[test]
+    fn adding_an_exercise_copies_its_definition() {
+        let p = vec![prog("Pull", "Barbell Row", "EZ Barbell", "Dumbbell Row", "Dumbbell", 9), prog("Upper", "Pallof Press", "Resistance Band", "", "", 21)];
+        // Its own row, moved to another day.
+        let r = programme_row_for(&p, "Morning", "Pallof Press").unwrap();
+        assert_eq!(r[0], "Morning");
+        assert_eq!(r[1], "Pallof Press");
+        assert_eq!(r[6], "Resistance Band");
+        assert_eq!(r[7], r#"=HYPERLINK("https://v/Pallof Press","▶ Pallof Press")"#);
+        assert_eq!(r[8], "");
+        // An alternative becomes its own exercise: parent's sets/reps, alternative's kit, weight and video.
+        let r = programme_row_for(&p, "Legs", "Dumbbell Row").unwrap();
+        assert_eq!((r[1].as_str(), r[2].as_u64(), r[5].as_f64(), r[6].as_str()), (Some("Dumbbell Row"), Some(3), Some(10.0), Some("Dumbbell")));
+        assert_eq!(r[8], "");
+        assert!(programme_row_for(&p, "Legs", "Unknown").is_none());
+    }
+
     #[test]
     fn editing_a_queued_entry_replaces_it() {
         let mut q = vec![];
@@ -491,6 +516,52 @@ async fn set_switch(state: &AppState, tab: &str, row: usize, name_col: &str, exp
         .await
         .map_err(|e| e.to_string())?;
     sync(state).await;
+    Ok(build_view(&state.0.lock().unwrap()))
+}
+
+/// The 💪 Workouts row (A:L) for `exercise` on `workout`, copied from wherever it's defined:
+/// its own row on another day, or as the alternative on some row (then it gets that row's
+/// sets and reps, the alternative's kit, start weight and video, and no alternative itself).
+fn programme_row_for(programme: &[ProgRow], workout: &str, exercise: &str) -> Option<Vec<serde_json::Value>> {
+    use serde_json::json;
+    let link = |url: &str, label: &str| if url.is_empty() { json!("") } else { json!(format!("=HYPERLINK(\"{url}\",\"▶ {label}\")")) };
+    if let Some(p) = programme.iter().find(|p| p.exercise == exercise) {
+        let alt_start = if p.alt_exercise.is_empty() { json!("") } else { json!(p.alt_start_weight) };
+        return Some(vec![
+            json!(workout), json!(p.exercise), json!(p.sets), json!(p.rep_low), json!(p.rep_high), json!(p.start_weight),
+            json!(p.equipment), link(&p.video, &p.exercise),
+            json!(p.alt_exercise), json!(p.alt_equipment), alt_start, link(&p.alt_video, &p.alt_exercise),
+        ]);
+    }
+    let p = programme.iter().find(|p| p.alt_exercise == exercise)?;
+    Some(vec![
+        json!(workout), json!(p.alt_exercise), json!(p.sets), json!(p.rep_low), json!(p.rep_high), json!(p.alt_start_weight),
+        json!(p.alt_equipment), link(&p.alt_video, &p.alt_exercise),
+        json!(""), json!(""), json!(""), json!(""),
+    ])
+}
+
+/// Add an exercise that's defined elsewhere in the programme to `workout` (a day),
+/// in the first empty 💪 Workouts row.
+#[tauri::command]
+async fn add_exercise(state: State<'_, AppState>, workout: String, exercise: String) -> Result<View, String> {
+    let (config, programme) = {
+        let s = state.0.lock().unwrap();
+        (s.config.clone(), s.data.as_ref().map(|d| d.programme.clone()).unwrap_or_default())
+    };
+    if programme.iter().any(|p| p.workout == workout && (p.exercise == exercise || p.alt_exercise == exercise)) {
+        return Err(format!("{exercise} is already on {workout}."));
+    }
+    let values = programme_row_for(&programme, &workout, &exercise).ok_or_else(|| format!("{exercise} isn't defined anywhere in the programme."))?;
+    let used: std::collections::HashSet<usize> = programme.iter().map(|p| p.row).collect();
+    let row = (model::WORKOUTS_FIRST_ROW..=model::WORKOUTS_LAST_ROW)
+        .find(|r| !used.contains(r))
+        .ok_or("💪 Workouts is full (its formulas stop at row 61). Delete an unused exercise row in the sheet first.")?;
+    let Source::Sheets(client) = source(&config)? else {
+        return Err("Snapshot mode is read-only. Connect to the Google Sheet to add exercises.".into());
+    };
+    client.write_programme_row(row, values, "Yes").await.map_err(|e| format!("{e:#}"))?;
+    sync(&state).await;
     Ok(build_view(&state.0.lock().unwrap()))
 }
 
@@ -620,7 +691,7 @@ pub fn run() {
             }), tauri::async_runtime::Mutex::new(())));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![load, save_entry, discard_pending, save_config, data_dir, check_update, install_update, set_equipment, set_exercise, import_file, platform_info])
+        .invoke_handler(tauri::generate_handler![load, save_entry, discard_pending, save_config, data_dir, check_update, install_update, set_equipment, set_exercise, add_exercise, import_file, platform_info])
         .run(tauri::generate_context!())
         .expect("error while running the app");
 }
