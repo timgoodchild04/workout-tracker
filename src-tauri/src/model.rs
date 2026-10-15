@@ -19,8 +19,11 @@ pub const LIBRARY_FIRST_ROW: usize = 5;
 /// targets in U:V, all from row 5. Read as one block.
 pub const RANGE_PLAN: &str = "A5:V104";
 pub const PLAN_FIRST_ROW: usize = 5;
-/// 📅 Plan's "Session order" setting: label in R2, value in S2.
-pub const RANGE_PLAN_SETTINGS: &str = "R2:S2";
+/// 📅 Plan's settings row: "Session order" (R2 label, S2 value) and
+/// "Deload every (weeks)" (U2 label, V2 value).
+pub const RANGE_PLAN_SETTINGS: &str = "R2:V2";
+/// 📅 Plan column listing the start date of each deload week (from row 5).
+pub const COL_DELOADS: &str = "T";
 pub const ROTATION: &str = "Rotation";
 /// Last 📅 Plan row the sheet's helper formulas and the Dashboard cover.
 pub const PLAN_LAST_ROW: usize = 104;
@@ -210,6 +213,12 @@ pub struct Data {
     /// "Weekday schedule" (default) or "Rotation" (📅 Plan S2).
     #[serde(default)]
     pub session_order: String,
+    /// Suggest a deload after this many training weeks (📅 Plan V2; 0 = never).
+    #[serde(default)]
+    pub deload_every: f64,
+    /// Start date of each deload week (📅 Plan column T), oldest first.
+    #[serde(default)]
+    pub deloads: Vec<NaiveDate>,
     pub schedule: Vec<SchedDay>,
     pub log: Vec<LogEntry>,
 }
@@ -218,6 +227,12 @@ impl Data {
     /// The library entry for an exercise (first match, like the sheet's MATCH).
     pub fn lib(&self, name: &str) -> Option<&LibEx> {
         self.library.iter().find(|l| l.name == name)
+    }
+
+    /// The deload week `date` falls in (its start), if any. A deload week is the start
+    /// date and the six days after it.
+    pub fn deload_on(&self, date: NaiveDate) -> Option<NaiveDate> {
+        self.deloads.iter().rev().find(|&&s| s <= date && (date - s).num_days() < 7).copied()
     }
 
     /// A day's focus from the Days table ("" if it isn't listed).
@@ -385,6 +400,9 @@ impl Data {
             .collect();
 
         let session_order = at(plan_settings, 0, 1).text();
-        Data { settings, library, plan: slots, days, targets, session_order, schedule, log }
+        let deload_every = at(plan_settings, 0, 4).num().unwrap_or(6.0);
+        let mut deloads: Vec<NaiveDate> = (0..plan.len()).filter_map(|i| parse_date(at(plan, i, 19))).collect();
+        deloads.sort();
+        Data { settings, library, plan: slots, days, targets, session_order, deload_every, deloads, schedule, log }
     }
 }

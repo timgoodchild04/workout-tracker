@@ -6,7 +6,7 @@
 use crate::coach::{resolve, Analysis};
 use crate::engine::{Engine, BODYWEIGHT};
 use crate::model::{Data, LibEx};
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -19,6 +19,35 @@ pub enum Action {
     Swap { row: usize, from: String, to: String },
     /// Set the sets on the slot on 📅 Plan row `row` (holding `exercise`).
     Sets { row: usize, exercise: String, sets: u32 },
+    /// Start a deload week on `start`.
+    Deload { start: NaiveDate },
+}
+
+/// Monday of `date`'s week.
+pub fn week_start(date: NaiveDate) -> NaiveDate {
+    date - chrono::Duration::days(date.weekday().num_days_from_monday() as i64)
+}
+
+/// A gap this long without a main session counts as rest, like a deload.
+pub const BREAK_RESETS_AFTER_DAYS: i64 = 14;
+
+/// Weeks (Mon–Sun) with at least one main (non-Morning) session since the last rest,
+/// up to and including `today`'s week. Rest = a deload week, or a break of 14+ days.
+pub fn training_weeks_since_deload(data: &Data, today: NaiveDate) -> usize {
+    let since = data.deloads.iter().filter(|&&s| s <= today).max().map(|&s| s + chrono::Duration::days(7));
+    let mut days: Vec<NaiveDate> = data
+        .log
+        .iter()
+        .filter(|e| e.date <= today && since.is_none_or(|s| e.date >= s) && data.focus(&e.workout) != "Morning")
+        .map(|e| e.date)
+        .collect();
+    days.sort();
+    days.dedup();
+    // Only count from the last long break onwards.
+    let from = days.windows(2).filter(|w| (w[1] - w[0]).num_days() >= BREAK_RESETS_AFTER_DAYS).map(|w| w[1]).last();
+    let mut weeks: Vec<NaiveDate> = days.into_iter().filter(|d| from.is_none_or(|f| *d >= f)).map(week_start).collect();
+    weeks.dedup();
+    weeks.len()
 }
 
 /// Most sets a suggestion will put on one exercise.
@@ -96,8 +125,9 @@ fn times_per_week(data: &Data) -> HashMap<&str, f64> {
     per_week
 }
 
-pub fn suggestions(data: &Data, engine: &Engine, analysis: &[Analysis], _today: NaiveDate) -> Vec<Suggestion> {
+pub fn suggestions(data: &Data, engine: &Engine, analysis: &[Analysis], today: NaiveDate) -> Vec<Suggestion> {
     let mut out = Vec::new();
+    let in_deload = data.deload_on(today);
 
     // 1. Weekly volume against the targets.
     let vol = planned_volume(data, engine);
@@ -149,7 +179,7 @@ pub fn suggestions(data: &Data, engine: &Engine, analysis: &[Analysis], _today: 
         if !seen.insert(lib.name.clone()) {
             continue; // one suggestion per exercise, even if it's on several days
         }
-        let hist: Vec<usize> = (0..data.log.len()).filter(|&i| data.log[i].exercise == lib.name).collect();
+        let hist: Vec<usize> = (0..data.log.len()).filter(|&i| data.log[i].exercise == lib.name && data.deload_on(data.log[i].date).is_none()).collect();
         let bodyweight = engine.load_type(&lib.equipment) == BODYWEIGHT;
         let last = hist.last().copied();
 
@@ -209,6 +239,28 @@ pub fn suggestions(data: &Data, engine: &Engine, analysis: &[Analysis], _today: 
             }
         }
     }
+    // Deloads: due after N training weeks, or early when several lifts have stalled.
+    if in_deload.is_none() {
+        let weeks = training_weeks_since_deload(data, today);
+        let stalls = out.iter().filter(|s| s.kind == "stall").count();
+        let every = data.deload_every;
+        let start = today;
+        if every > 0.0 && weeks as f64 >= every {
+            out.insert(0, Suggestion {
+                kind: "deload",
+                title: format!("Deload week due: {weeks} training weeks since the last one"),
+                detail: "For one week every exercise gets about 60% of its usual sets at your normal weights. Recovery catches up and progress usually picks up after it.".into(),
+                action: Some(Action::Deload { start }),
+            });
+        } else if stalls >= 3 {
+            out.insert(0, Suggestion {
+                kind: "deload",
+                title: format!("{stalls} lifts have stalled: a deload week could unstick them"),
+                detail: "One week at about 60% of the usual sets, normal weights, then back to normal progression.".into(),
+                action: Some(Action::Deload { start }),
+            });
+        }
+    }
     out
 }
 
@@ -254,4 +306,61 @@ pub fn volume(data: &Data, engine: &Engine, today: NaiveDate) -> Vec<VolumeRow> 
             muscle: m,
         })
         .collect()
+}
+
+/// The Coach tab's weekly review (Monday to Sunday of `today`'s week).
+#[derive(Debug, Clone, Serialize)]
+pub struct WeekReview {
+    pub week_start: NaiveDate,
+    /// (session, date) for each session logged this week, in order.
+    pub sessions: Vec<(String, NaiveDate)>,
+    /// Working sets logged (sets of 0 don't count), this week and last.
+    pub sets: f64,
+    pub sets_last_week: f64,
+    /// "Barbell Row 25kg × 12/12/12/12" for each personal best this week.
+    pub pbs: Vec<String>,
+    /// Rotation mode: rounds completed this week, and what's owed now.
+    pub rounds_completed: usize,
+    pub owed: Option<String>,
+    /// The deload week `today` is in (its last day).
+    pub deload_until: Option<NaiveDate>,
+    /// Training weeks since the last deload, and the setting.
+    pub weeks_since_deload: usize,
+    pub deload_every: f64,
+}
+
+pub fn review(data: &Data, analysis: &[Analysis], today: NaiveDate) -> WeekReview {
+    let start = week_start(today);
+    let last_start = start - chrono::Duration::days(7);
+    let sets_in = |from: NaiveDate, to: NaiveDate| {
+        data.log.iter().filter(|e| e.date >= from && e.date < to).map(|e| e.sets.iter().flatten().filter(|&&r| r > 0.0).count() as f64).sum::<f64>()
+    };
+    let mut sessions: Vec<(String, NaiveDate)> = Vec::new();
+    for e in data.log.iter().filter(|e| e.date >= start && e.date <= today) {
+        if !sessions.iter().any(|(w, d)| *w == e.workout && *d == e.date) {
+            sessions.push((e.workout.clone(), e.date));
+        }
+    }
+    sessions.sort_by_key(|(_, d)| *d);
+    let pb = crate::coach::personal_bests(data, analysis);
+    let pbs = (0..data.log.len())
+        .filter(|&i| pb[i] && data.log[i].date >= start && data.log[i].date <= today)
+        .map(|i| {
+            let e = &data.log[i];
+            if analysis[i].load_type == BODYWEIGHT { format!("{} × {}", e.exercise, crate::coach::sets_text(e)) } else { format!("{} {}kg × {}", e.exercise, crate::engine::fmt_num(e.weight), crate::coach::sets_text(e)) }
+        })
+        .collect();
+    let rot = (data.session_order == crate::model::ROTATION).then(|| crate::coach::rotation(data, today + chrono::Duration::days(1))).flatten();
+    WeekReview {
+        week_start: start,
+        sessions,
+        sets: sets_in(start, today + chrono::Duration::days(1)),
+        sets_last_week: sets_in(last_start, start),
+        pbs,
+        rounds_completed: rot.as_ref().map_or(0, |r| r.completed.iter().filter(|&&d| d >= start && d <= today).count()),
+        owed: rot.filter(|r| !r.ahead.is_empty()).map(|r| r.next),
+        deload_until: data.deload_on(today).map(|s| s + chrono::Duration::days(6)),
+        weeks_since_deload: training_weeks_since_deload(data, today),
+        deload_every: data.deload_every,
+    }
 }

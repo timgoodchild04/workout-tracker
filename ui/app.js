@@ -274,9 +274,19 @@ function renderToday(el) {
     </div>`;
 
   const order = plan ? plan.order : sv.cards.map((_, i) => i);
-  const cards = order.map((i, pos) => card(sv.cards[i], i, draft[sv.cards[i].exercise], pos + 1, plan?.changes[i] || [])).join("");
+  const { sets: trimmed, dropped } = shortOnTime(sv.cards, order);
+  const shown = order.filter((i) => i !== dropped);
+  const cards = shown.map((i, pos) => card({ ...sv.cards[i], sets: trimmed.get(i) ?? sv.cards[i].sets }, i, draft[sv.cards[i].exercise], pos + 1, plan?.changes[i] || [])).join("");
+  const left = shown.filter((i) => !sv.cards[i].logged).map((i) => ({ ...sv.cards[i], sets: trimmed.get(i) ?? sv.cards[i].sets }));
+  const mins = estimateMinutes(left, plan);
+  const timeBar = sv.cards.length ? `<div class="timebar">
+      <span>${left.length ? `≈ <b>${mins} min</b> left (${left.length} exercise${left.length > 1 ? "s" : ""})` : "All done for this session"}</span>
+      <button class="btn ${isShort() ? "primary" : ""}" id="short-toggle" title="Trim isolation work by a set and drop the last accessory. Main lifts are never cut.">${isShort() ? "Short on time: on" : "Short on time?"}</button>
+      ${isShort() && dropped != null ? `<span class="small muted">Dropped for time: ${esc(sv.cards[dropped].exercise)}</span>` : ""}</div>` : "";
+  const deloadNote = sv.cards.some((c) => c.deload) && v.review?.deload_until
+    ? `<div class="deload-note"><b>Deload week</b> until ${esc(fmtDate(v.review.deload_until))}: about 60% of your usual sets at your normal weights. Progress picks up from your last normal session afterwards.</div>` : "";
 
-  el.innerHTML = head + chips + off + rest + toolbar + kitNote + stackNote + `<div class="cards">${cards}</div>`;
+  el.innerHTML = head + chips + off + rest + deloadNote + toolbar + timeBar + kitNote + stackNote + `<div class="cards">${cards}</div>`;
 
   $$(".chip", el).forEach((b) => b.addEventListener("click", () => { S.session = b.dataset.session; render(); }));
   $("#back-to-schedule")?.addEventListener("click", (e) => { e.preventDefault(); S.session = null; render(); });
@@ -293,6 +303,9 @@ function renderToday(el) {
   }));
   $$(".card", el).forEach((c) => c.addEventListener("focusout", onCardLeave));
   $$(".copy-btn", el).forEach((b) => b.addEventListener("click", () => fillSets(b.closest(".card"))));
+  $$(".same-btn", el).forEach((b) => b.addEventListener("click", () => sameAsLast(b.closest(".card"))));
+  $$(".card input", el).forEach((inp) => inp.addEventListener("keydown", onEnterNext));
+  $("#short-toggle")?.addEventListener("click", () => { setShort(!isShort()); render(); });
   updateSavedCount();
 }
 
@@ -318,7 +331,7 @@ function card(c, i, d, pos, changes) {
     <div class="card-head">
       <span class="pos">${pos}</span>
       <div class="card-title">${title}
-        <div class="meta">${esc(c.equipment)} · ${c.sets} × ${num(c.rep_low)}–${num(c.rep_high)}${c.substituted ? ` · <span title="Main kit is switched off">instead of ${esc(c.original)}</span>` : ""}</div>
+        <div class="meta">${esc(c.equipment)} · ${c.sets} × ${num(c.rep_low)}–${num(c.rep_high)} · rest ${fmtRest(c.rest_secs)}${c.deload ? " · deload" : ""}${c.substituted ? ` · <span title="Main kit is switched off">instead of ${esc(c.original)}</span>` : ""}</div>
       </div>
       <span class="save-state">${saveState(c, d)}</span>
     </div>
@@ -330,11 +343,13 @@ function card(c, i, d, pos, changes) {
     ${!lg && c.warmups.length ? `<div class="warmup"><span class="sublabel">Warm-up first</span>${c.warmups.map((w) =>
       `<span class="wu"><b>${esc(w.label === "Empty bar" ? "Empty bar" : num(w.kg) + "kg")}</b> × ${w.reps}${w.label === "Empty bar" ? "" : `<span class="muted"> · ${esc(w.text.split(" — ")[1] ?? w.text)}</span>`}</span>`).join("")}</div>` : ""}
     ${changes.length ? `<div class="swap"><span class="sublabel">Plates before this exercise</span>${changes.map((x) => `<div class="${x.startsWith("Sleeve now") ? "sleeve" : ""}">${esc(x)}</div>`).join("")}</div>` : ""}
+    ${c.notes ? `<div class="cue"><span class="sublabel">Cues</span> ${esc(c.notes)}</div>` : ""}
     <div class="instr" title="${esc(lg ? lg.decision : c.instruction)}">${lg ? `<b>Next time:</b> ${esc(nextLine(lg.decision))}` : esc(coachLine(c))}</div>
     <div class="entry">
       ${bw ? "" : `<label>Weight<input class="wt" type="number" step="0.5" min="0" inputmode="decimal" data-k="weight" value="${esc(num(weight))}"></label><span class="unit">${unit}</span><span class="gap"></span>`}
       ${Array.from({ length: n }, (_, k) => `<label>Set ${k + 1}<input type="number" min="0" step="1" inputmode="numeric" data-k="set" data-s="${k}" placeholder="" value="${esc(sets[k] ?? "")}"></label>`).join("")}
       <button class="copy-btn" type="button" title="Fill every set with the top of the range">All ${num(c.rep_high)}</button>
+      ${c.previous_sets.some((x) => x != null) ? `<button class="same-btn copy-btn" type="button" title="Fill in the weight and reps from last time">Same as last time</button>` : ""}
     </div>
   </article>`;
 }
@@ -527,6 +542,59 @@ function autoSave(cardEl) {
     saving.delete(ex);
     renderWhenIdle();
   });
+}
+
+// ---------------------------------------------------------------- time, short-on-time, quick entry
+
+const fmtRest = (s) => (s % 60 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : `${s / 60} min`);
+
+/** Rough minutes for these cards: each set's work plus the rest between sets, warm-ups,
+ *  a minute to set up each exercise, and a few seconds per plate move. */
+function estimateMinutes(cards, plan) {
+  let secs = 0;
+  for (const c of cards) {
+    const n = Math.min(c.sets, 4);
+    const timed = c.load_type === "Bodyweight" && c.rep_high >= 30; // holds: the range is in seconds
+    const work = timed ? (c.rep_low + c.rep_high) / 2 : 40;
+    secs += n * work + Math.max(0, n - 1) * c.rest_secs + 60;
+    if (!c.deload) secs += c.warmups.length * 75;
+  }
+  secs += (plan?.moves || 0) * 5;
+  return Math.max(1, Math.round(secs / 60));
+}
+
+const shortKey = () => `short|${S.logDate}|${currentSession()}`;
+function isShort() { try { return localStorage.getItem(shortKey()) === "1"; } catch { return false; } }
+function setShort(on) { try { on ? localStorage.setItem(shortKey(), "1") : localStorage.removeItem(shortKey()); } catch {} }
+
+/** Short on time: isolation exercises not yet done lose a set (never below one) and the
+ *  last of them in today's order is dropped. Main lifts are never touched. */
+function shortOnTime(cards, order) {
+  const sets = new Map();
+  if (!isShort()) return { sets, dropped: null };
+  const iso = order.filter((i) => !cards[i].compound && !cards[i].logged);
+  const dropped = iso.length ? iso[iso.length - 1] : null;
+  for (const i of iso) if (i !== dropped) sets.set(i, Math.max(1, cards[i].sets - 1));
+  return { sets, dropped };
+}
+
+/** Enter moves on: weight → each set → the next card's first box. */
+function onEnterNext(e) {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  const boxes = $$(".card input");
+  const next = boxes[boxes.indexOf(e.target) + 1];
+  if (next) { next.focus(); next.select?.(); } else e.target.blur();
+}
+
+/** Fill a card with last session's weight and reps (only the boxes it has). */
+function sameAsLast(cardEl) {
+  const c = currentCards()[cardEl.dataset.i];
+  if (!c) return;
+  const w = $('input[data-k="weight"]', cardEl);
+  if (w && c.previous_weight != null) w.value = num(c.previous_weight);
+  $$('input[data-k="set"]', cardEl).forEach((inp, k) => { inp.value = c.previous_sets[k] == null ? "" : num(c.previous_sets[k]); });
+  onEntryInput({ target: cardEl.querySelector("input") });
 }
 
 function fillSets(cardEl) {
@@ -749,9 +817,10 @@ function renderProgramme(el) {
 function renderCoach(el) {
   const v = S.view;
   const live = v.status.mode === "sheets" && v.status.online;
-  const groups = [["volume", "Weekly volume"], ["stall", "Stalled exercises"], ["progress", "Bodyweight progressions"]];
-  const actionLabel = (a) => !a ? "" : a.kind === "add" ? `Add ${a.exercise}` : a.kind === "swap" ? `Swap to ${a.to}` : `Set ${a.sets} sets`;
-  let html = `<h1>Coach</h1><p class="sub">Suggestions from your plan and your log. Each one changes the 📅 Plan only when you press its button.</p>`;
+  const groups = [["deload", "Deload"], ["volume", "Weekly volume"], ["stall", "Stalled exercises"], ["progress", "Bodyweight progressions"]];
+  const actionLabel = (a) => !a ? "" : a.kind === "add" ? `Add ${a.exercise}` : a.kind === "swap" ? `Swap to ${a.to}`
+    : a.kind === "deload" ? "Start a deload week today" : `Set ${a.sets} sets`;
+  let html = `<h1>Coach</h1><p class="sub">Suggestions from your plan and your log. Each one changes the 📅 Plan only when you press its button.</p>${weekReview(v)}`;
   for (const [kind, title] of groups) {
     const list = v.suggestions.map((s, i) => [s, i]).filter(([s]) => s.kind === kind);
     if (!list.length) continue;
@@ -771,7 +840,26 @@ function renderCoach(el) {
   $$("[data-apply]", el).forEach((b) => b.addEventListener("click", () => applyAction(v.suggestions[b.dataset.apply].action)));
 }
 
+/** This week at a glance (Monday to today). */
+function weekReview(v) {
+  const r = v.review;
+  if (!r) return "";
+  const short = (d) => d.split(" — ").pop();
+  const diff = r.sets - r.sets_last_week;
+  const rows = [
+    ["Sessions", r.sessions.length ? r.sessions.map(([s, d]) => `${esc(short(s))} <span class="muted">${esc(fmtDate(d, { weekday: "short" }))}</span>`).join(" · ") : '<span class="muted">none yet</span>'],
+    ["Working sets", `${num(r.sets)} <span class="muted">(${diff >= 0 ? "+" : ""}${num(diff)} on last week's ${num(r.sets_last_week)})</span>`],
+    ["Personal bests", r.pbs.length ? r.pbs.map(esc).join("<br>") : '<span class="muted">none this week</span>'],
+  ];
+  if (v.session_order === "Rotation") rows.push(["Rotation", `${r.rounds_completed} round${r.rounds_completed === 1 ? "" : "s"} completed this week${r.owed ? ` · <b>${esc(short(r.owed))} is owed</b>` : ""}`]);
+  rows.push(["Deload", r.deload_until ? `<b>Deload week</b> until ${esc(fmtDate(r.deload_until))}`
+    : r.deload_every > 0 ? `${r.weeks_since_deload} of ${num(r.deload_every)} training weeks since the last rest` : "off"]);
+  return `<div class="panel"><h3>This week <span class="muted small">from ${esc(fmtDate(r.week_start))}</span></h3>
+    <div class="table-wrap"><table><tbody>${rows.map(([k, val]) => `<tr><td class="muted">${k}</td><td>${val}</td></tr>`).join("")}</tbody></table></div></div>`;
+}
+
 async function applyAction(a) {
+  if (a.kind === "deload") return planCall("start_deload", { start: a.start }, "Deload week started: about 60% of your usual sets until next week.");
   if (a.kind === "add") return planCall("add_slot", { day: a.day, exercise: a.exercise }, `${a.exercise} added to ${a.day}.`);
   if (a.kind === "swap") return planCall("swap_slot", { row: a.row, from: a.from, to: a.to }, `${a.from} swapped for ${a.to}.`);
   if (a.kind === "sets") return planCall("set_slot_sets", { row: a.row, exercise: a.exercise, sets: a.sets }, `${a.exercise}: ${a.sets} sets.`);

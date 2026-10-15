@@ -138,6 +138,7 @@ pub struct View {
     session_order: String,
     suggestions: Vec<suggest::Suggestion>,
     volume: Vec<suggest::VolumeRow>,
+    review: Option<suggest::WeekReview>,
     settings: Option<Settings>,
 }
 
@@ -197,6 +198,7 @@ fn build_view(s: &Inner) -> View {
         session_order: String::new(),
         suggestions: vec![],
         volume: vec![],
+        review: None,
         settings: None,
     };
     let Some(base) = &s.data else { return view };
@@ -268,6 +270,7 @@ fn build_view(s: &Inner) -> View {
     view.session_order = data.session_order.clone();
     view.suggestions = suggest::suggestions(&data, &engine, &analysis, today);
     view.volume = suggest::volume(&data, &engine, today);
+    view.review = Some(suggest::review(&data, &analysis, today));
     view.settings = Some(data.settings.clone());
     view
 }
@@ -643,6 +646,25 @@ async fn delete_entry(state: State<'_, AppState>, row: Option<usize>, date: Stri
     Ok(build_view(&state.0.lock().unwrap()))
 }
 
+/// Start a deload week on `start`: add it to 📅 Plan's deload list (column T), in the
+/// first empty cell (re-read first to check it's still empty).
+#[tauri::command]
+async fn start_deload(state: State<'_, AppState>, start: String) -> Result<View, String> {
+    let date = NaiveDate::parse_from_str(&start, "%Y-%m-%d").map_err(|_| format!("bad date {start}"))?;
+    let (config, rows_used) = {
+        let s = state.0.lock().unwrap();
+        (s.config.clone(), s.data.as_ref().map_or(0, |d| d.deloads.len()))
+    };
+    let Source::Sheets(client) = source(&config)? else {
+        return Err("Snapshot mode is read-only. Connect to the Google Sheet to start a deload.".into());
+    };
+    let row = model::PLAN_FIRST_ROW + rows_used;
+    let cell = format!("{}{row}", model::COL_DELOADS);
+    client.set_cell(model::TAB_PLAN, &cell, "", &cell, &date.format("%Y-%m-%d").to_string()).await.map_err(|e| format!("{e:#}"))?;
+    sync(&state).await;
+    Ok(build_view(&state.0.lock().unwrap()))
+}
+
 /// Weekday schedule or rotation (📅 Plan S2).
 #[tauri::command]
 async fn set_session_order(state: State<'_, AppState>, order: String) -> Result<View, String> {
@@ -797,7 +819,7 @@ pub fn run() {
             }), tauri::async_runtime::Mutex::new(())));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![load, save_entry, discard_pending, save_config, data_dir, check_update, install_update, set_equipment, set_slot, add_slot, swap_slot, set_slot_sets, remove_slot, set_session_order, delete_entry, import_file, platform_info])
+        .invoke_handler(tauri::generate_handler![load, save_entry, discard_pending, save_config, data_dir, check_update, install_update, set_equipment, set_slot, add_slot, swap_slot, set_slot_sets, remove_slot, set_session_order, delete_entry, start_deload, import_file, platform_info])
         .run(tauri::generate_context!())
         .expect("error while running the app");
 }

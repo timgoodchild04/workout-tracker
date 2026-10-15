@@ -296,3 +296,45 @@ fn rotation_keeps_skipped_days_owed() {
         eprintln!("after {:?}: {} — {}", done.iter().map(|(_, w)| w.rsplit(" — ").next().unwrap()).collect::<Vec<_>>(), t.session, t.notes);
     }
 }
+
+/// Deloads: fewer sets that week, progression ignores the deload entries, due after N weeks.
+#[test]
+fn deload_weeks() {
+    use workout_tracker_lib::{model::LogEntry, suggest};
+    let Ok(path) = std::env::var("WT_SNAPSHOT") else { return };
+    let mut data = snapshot::load(std::path::Path::new(&path)).unwrap();
+    let engine = Engine::new(&data.settings);
+    let d = |m, day| chrono::NaiveDate::from_ymd_opt(2026, m, day).unwrap();
+    let push = "🦾 Day 1 — Push";
+
+    // Real log, no deloads yet: how many training weeks, and is one suggested?
+    let a = coach::analyse(&data, &engine);
+    let weeks = suggest::training_weeks_since_deload(&data, d(10, 15));
+    let due = suggest::suggestions(&data, &engine, &a, d(10, 15)).iter().any(|s| s.kind == "deload");
+    eprintln!("real log: {weeks} training weeks, deload suggested: {due} (every {})", data.deload_every);
+    assert_eq!(due, weeks as f64 >= data.deload_every);
+    assert_eq!(weeks, 1, "the Sept-Oct break resets the count: only this week since you came back");
+
+    // A deload week starting Mon 19 Oct: Push on the 19th has ~60% of the sets.
+    data.deloads = vec![d(10, 19)];
+    let (normal, _) = coach::session_cards(&data, &engine, &a, push, d(10, 18));
+    let (light, _) = coach::session_cards(&data, &engine, &a, push, d(10, 19));
+    for (n, l) in normal.iter().zip(&light) {
+        assert!(l.deload && !n.deload);
+        assert_eq!(l.sets, coach::deload_sets(n.sets), "{}", l.exercise);
+        assert_eq!(l.recommended, n.recommended, "same weights in a deload: {}", l.exercise);
+    }
+    eprintln!("deload Push sets: {:?} -> {:?}", normal.iter().map(|c| c.sets).collect::<Vec<_>>(), light.iter().map(|c| c.sets).collect::<Vec<_>>());
+
+    // Log a light bench session in the deload, then look at the 26th: the recommendation
+    // still comes from the last normal session (12 Oct), not the deload one.
+    let bench = normal.iter().find(|c| c.exercise == "Barbell Bench Press").unwrap().clone();
+    data.log.push(LogEntry { date: d(10, 19), workout: push.into(), exercise: bench.exercise.clone(), weight: bench.recommended_kg, sets: [Some(8.0), Some(8.0), None, None], row: None, queued: false });
+    let a = coach::analyse(&data, &engine);
+    let (after, _) = coach::session_cards(&data, &engine, &a, push, d(10, 26));
+    let b = after.iter().find(|c| c.exercise == "Barbell Bench Press").unwrap();
+    assert_eq!(b.previous_date, Some(d(10, 12)), "progression skips the deload entry");
+    assert_eq!(b.recommended, bench.recommended);
+    assert!(b.ease_back.is_none(), "the deload session counts as recent for easing back");
+    assert_eq!(suggest::training_weeks_since_deload(&data, d(10, 26)), 0, "weeks restart after a deload");
+}

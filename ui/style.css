@@ -244,3 +244,9 @@ tr:hover .hist-actions .icon-btn { opacity: 1; }
 tr.editing input[type=number] { width: 4.2em; margin-right: 4px; }
 .row-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
 .owed-note { font-size: 13px; margin: 0 0 12px; padding: 8px 10px; border-radius: 8px; background: var(--warn-bg); color: var(--text); }
+
+/* Today: deload, time estimate, cues */
+.deload-note { font-size: 13px; margin: 0 0 12px; padding: 8px 10px; border-radius: 8px; background: var(--new-bg); }
+.timebar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 0 0 12px; font-size: 14px; }
+.cue { font-size: 13px; margin: 8px 0 0; color: var(--text-2); }
+.cue .sublabel { display: inline; margin-right: 6px; }

@@ -57,6 +57,22 @@ used; it keeps its name only so app versions before 0.3.0 still sync until they 
   (e.g. "Push ✓ · Pull ✓ · Legs (owed) · Upper ✓"), and opening another session while one is
   owed says so. Morning still follows the weekday schedule.
 
+### Deloads, time and the weekly review
+
+- **Deload weeks.** 📅 Plan V2 sets how often (default every 6 training weeks; 0 = never). The
+  count restarts after a deload or any break of 14+ days. When one is due, or when 3+ lifts
+  have stalled, the Coach suggests it; one click adds the start date to 📅 Plan column T.
+  For that week every card has about 60% of its sets at your normal weights, and progression
+  afterwards ignores the deload week's entries.
+- **Session length.** Today shows roughly how long what's left will take (sets, rest, warm-ups,
+  setup and plate changes). **Short on time** trims each isolation exercise by a set and drops
+  the last one; main lifts are never cut. It's remembered per day and session on that computer.
+- **Quick entry.** Enter moves to the next box and on to the next exercise; *Same as last
+  time* fills in last session's weight and reps. Each card shows its rest length, and the
+  library's Notes column as **Cues**.
+- **This week** on the Coach tab: sessions, working sets against last week, PBs, rotation
+  rounds and anything owed, and how close the next deload is.
+
 ### Morning session
 
 Core and pull-up work is a short 🌅 Morning session, a day on 📅 Plan like any other. Column E of the Schedule tab says which days it's due (weekdays). On those days the

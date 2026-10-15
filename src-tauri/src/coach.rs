@@ -214,6 +214,14 @@ pub struct Card {
     pub warmups: Vec<WarmUp>,
     /// Rest between sets for the Today screen's timer.
     pub rest_secs: u32,
+    /// The card's date is in a deload week (its sets are already cut).
+    pub deload: bool,
+    /// A main (compound) lift: short-on-time mode never trims these.
+    pub compound: bool,
+    /// Cues from the library's Notes column.
+    pub notes: String,
+    /// The sets of the last normal session, for "Same as last time".
+    pub previous_sets: [Option<f64>; 4],
     /// The slot's movement pattern (what can be swapped in).
     pub pattern: String,
     /// 📅 Plan row of the slot this card comes from.
@@ -222,6 +230,11 @@ pub struct Card {
 
 /// Movement patterns that load the whole body enough to need warm-up sets.
 pub const COMPOUND_PATTERNS: [&str; 7] = ["Horizontal push", "Vertical push", "Vertical pull", "Horizontal pull", "Squat", "Lunge", "Hinge"];
+
+/// Sets in a deload week: about 60% of the usual, at least one.
+pub fn deload_sets(sets: u32) -> u32 {
+    ((sets as f64 * 0.6).round() as u32).max(1)
+}
 
 /// After this many days without an exercise, its first session back is eased.
 pub const EASE_BACK_AFTER_DAYS: i64 = 10;
@@ -319,7 +332,10 @@ pub fn session_cards(data: &Data, engine: &Engine, analysis: &[Analysis], sessio
         };
         let (exercise, equipment, start, video) = (&lib.name, &lib.equipment, lib.start_weight, &lib.video);
         let load_type = engine.load_type(equipment);
-        let last = data.log.iter().rposition(|e| &e.exercise == exercise && e.date < date);
+        // Progression comes from the last normal session: deload-week entries are lighter
+        // on purpose, so they mustn't read as a drop. (Ease-back counts days from any.)
+        let last = data.log.iter().rposition(|e| &e.exercise == exercise && e.date < date && data.deload_on(e.date).is_none());
+        let last_any = data.log.iter().rposition(|e| &e.exercise == exercise && e.date < date);
         let logged = data.log.iter().rposition(|e| &e.exercise == exercise && e.date == date).map(|i| Logged {
             pb: pbs[i],
             weight: data.log[i].weight,
@@ -367,7 +383,7 @@ pub fn session_cards(data: &Data, engine: &Engine, analysis: &[Analysis], sessio
             }
         };
         // First session back after a break: restart lighter than last time.
-        let ease_back = last.and_then(|n| {
+        let ease_back = last_any.and_then(|n| {
             let days = (date - data.log[n].date).num_days();
             let weighted = [BARBELL, DUMBBELL, FIXED].contains(&load_type.as_str());
             // Light loads (under 10kg) aren't worth easing: a step down is most of the weight.
@@ -380,6 +396,7 @@ pub fn session_cards(data: &Data, engine: &Engine, analysis: &[Analysis], sessio
         let compound = COMPOUND_PATTERNS.contains(&lib.pattern.as_str());
         let working = ease_back.as_ref().map_or(recommended_kg, |e| e.kg);
         let warmups = if compound { warmups(engine, &load_type, equipment, working) } else { vec![] };
+        let deload = data.deload_on(date).is_some();
         let rest_secs = if compound { 150 } else if lib.pattern.starts_with("Core") { 60 } else { 90 };
         cards.push(Card {
             ease_back,
@@ -391,7 +408,11 @@ pub fn session_cards(data: &Data, engine: &Engine, analysis: &[Analysis], sessio
             equipment: equipment.clone(),
             load_type,
             video: video.clone(),
-            sets: slot.sets.unwrap_or(lib.sets),
+            sets: if deload { deload_sets(slot.sets.unwrap_or(lib.sets)) } else { slot.sets.unwrap_or(lib.sets) },
+            deload,
+            compound,
+            notes: lib.notes.clone(),
+            previous_sets: last.map(|n| data.log[n].sets).unwrap_or([None; 4]),
             rep_low: lib.rep_low,
             rep_high: lib.rep_high,
             pattern: lib.pattern.clone(),
@@ -451,6 +472,8 @@ pub struct Rotation {
     pub ahead: Vec<String>,
     /// The last main session logged before `date`.
     pub last: Option<(String, NaiveDate)>,
+    /// Dates rounds were completed on, oldest first.
+    pub completed: Vec<NaiveDate>,
 }
 
 pub fn rotation(data: &Data, date: NaiveDate) -> Option<Rotation> {
@@ -464,6 +487,7 @@ pub fn rotation(data: &Data, date: NaiveDate) -> Option<Rotation> {
     // Sessions in the order they were logged (log order within a day).
     let mut done: Vec<String> = Vec::new();
     let mut last = None;
+    let mut completed = Vec::new();
     let mut entries: Vec<(NaiveDate, usize)> = (0..data.log.len()).filter(|&i| data.log[i].date < date && order.contains(&data.log[i].workout)).map(|i| (data.log[i].date, i)).collect();
     entries.sort();
     for (d, i) in entries {
@@ -474,13 +498,14 @@ pub fn rotation(data: &Data, date: NaiveDate) -> Option<Rotation> {
         last = Some((w.clone(), d));
         if order.iter().all(|o| done.contains(o)) {
             done.clear();
+            completed.push(d);
         }
     }
     let next = order.iter().find(|o| !done.contains(o)).unwrap().clone();
     let pos = order.iter().position(|o| *o == next).unwrap();
     let ahead = order[pos + 1..].iter().filter(|o| done.contains(o)).cloned().collect();
     let round = order.iter().map(|o| (o.clone(), done.contains(o))).collect();
-    Some(Rotation { next, round, ahead, last })
+    Some(Rotation { next, round, ahead, last, completed })
 }
 
 /// Today's session, by weekday or by rotation as 📅 Plan's Session order says.
