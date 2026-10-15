@@ -14,13 +14,15 @@ sessions into it, and the sheet keeps working on its own exactly as before.
 | Programme | The 💪 Workouts tab, read-only, with kit that's switched off struck through. |
 | Settings | The connection, plus the plates, kit and coach rules read from ⚙️ Settings. |
 
-### Exercise order and plate swaps
+### Exercise order and plate stacking
 
-Today can reorder a session to need the fewest plate changes. It counts every plate on or off the
-bar and the dumbbells, and the two share one pool of plates. Each card then says exactly what to swap.
-Bodyweight and band work keeps its slot, the first plate-loaded exercise (the main lift) stays first,
-and compound and isolation slots don't swap with each other (`src-tauri/src/plan.rs`). On the
-15 Oct data, Legs goes from 50 to 46 moves. The other days are already at the minimum under those rules.
+Plates sit on a sleeve as a stack, so the order you load them decides how many come off at the next
+change. The Today screen plans both the exercise order and the stacking order for the whole session,
+with the bar and dumbbells sharing one pool of plates. Each card says what to take off (outermost
+first), what to put on and in which order, and what's on the sleeve afterwards. Bodyweight and band
+work keeps its slot, the first plate-loaded exercise stays first, and compound and isolation slots
+don't swap (`src-tauri/src/plan.rs`). On the 15 Oct data the plan takes 24 / 26 / 46 / 18 plate
+moves for Push / Pull / Legs / Upper, against 36 / 34 / 60 / 26 loading heaviest plate first.
 
 The coaching logic (double progression, plate maths, jump limits, reduce/review) is a
 straight port of the sheet's formulas into Rust (`src-tauri/src/coach.rs`, `engine.rs`).
