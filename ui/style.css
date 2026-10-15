@@ -220,3 +220,26 @@ h2 { font-size: 18px; margin: 28px 0 4px; }
 .plan-edit select { max-width: 100%; }
 .plan-edit td:nth-child(2) { min-width: 220px; }
 .plan-edit .icon-btn { font-size: 18px; line-height: 1; }
+
+/* Today: easing back in, warm-ups */
+.ease { margin-top: 6px; font-size: 12px; color: var(--text-2); background: var(--new-bg); border-radius: 8px; padding: 6px 8px; }
+.warmup { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; font-size: 13px; margin: 8px 0 2px; }
+.warmup .sublabel { width: 100%; }
+.warmup .wu .muted { font-size: 12px; }
+
+/* Rest timer */
+.rest-bar { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 9; display: flex; align-items: center; gap: 12px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 10px 14px; box-shadow: 0 6px 24px rgba(0,0,0,.25); }
+.rest-bar .rest-label { font-size: 13px; color: var(--text-2); max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rest-bar .rest-time { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; min-width: 3.2em; text-align: center; }
+.rest-bar.done { border-color: var(--good); }
+.rest-bar.done .rest-time { color: var(--good); }
+@media (max-width: 720px) { .rest-bar { bottom: 70px; } }
+
+/* History edit/delete */
+.hist-actions { width: 1%; }
+.hist-actions > div { display: flex; gap: 2px; justify-content: flex-end; }
+.hist-actions .icon-btn { opacity: .55; }
+tr:hover .hist-actions .icon-btn { opacity: 1; }
+tr.editing input[type=number] { width: 4.2em; margin-right: 4px; }
+.row-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }

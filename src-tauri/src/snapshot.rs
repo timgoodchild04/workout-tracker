@@ -57,10 +57,11 @@ pub fn load(path: &Path) -> Result<Data> {
     };
     let library = grid(TAB_LIBRARY, RANGE_LIBRARY, &[])?;
     let plan = grid(TAB_PLAN, RANGE_PLAN, &[])?;
+    let plan_settings = grid(TAB_PLAN, RANGE_PLAN_SETTINGS, &[])?;
     let settings = grid(TAB_SETTINGS, RANGE_SETTINGS, &[])?;
     let schedule = grid(TAB_SCHEDULE, RANGE_SCHEDULE, &[])?;
     let log = grid(TAB_LOG, RANGE_LOG, &[])?;
-    Ok(Data::from_grids(&library, &plan, &settings, &schedule, &log))
+    Ok(Data::from_grids(&library, &plan, &plan_settings, &settings, &schedule, &log))
 }
 
 /// Cached values of arbitrary log columns (used by the parity test).

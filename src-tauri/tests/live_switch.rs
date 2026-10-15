@@ -61,3 +61,19 @@ fn plan_row_write_needs_an_empty_row() {
         eprintln!("plan row {used} ({}) in use: refused: {err}", data.plan[0].exercise);
     });
 }
+
+/// Opt-in: deleting from History refuses a row that doesn't match. Writes nothing.
+#[test]
+#[ignore]
+fn log_row_delete_is_guarded() {
+    let key = std::env::var("WT_KEY").expect("set WT_KEY to the service-account key file");
+    let client = sheets::Client::new(std::path::Path::new(&key), DEFAULT_SHEET_ID).unwrap();
+    tauri::async_runtime::block_on(async {
+        let data = client.fetch().await.unwrap();
+        let last = data.log.iter().max_by_key(|e| e.row).unwrap();
+        let err = client.clear_log_row(last.row.unwrap(), last.date, "Not An Exercise").await.unwrap_err();
+        let after = client.fetch().await.unwrap();
+        assert!(after.log.iter().any(|e| e.row == last.row && e.exercise == last.exercise), "row must be untouched");
+        eprintln!("delete of row {:?} with the wrong exercise refused: {err}", last.row);
+    });
+}

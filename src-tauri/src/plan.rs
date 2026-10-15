@@ -63,7 +63,9 @@ fn needs(cards: &[Card], engine: &Engine) -> Vec<Option<Need>> {
                 DUMBBELL => 1,
                 _ => return None,
             };
-            engine.plates_for(&c.load_type, c.recommended_kg).map(|n| Need { imp, n })
+            // The load actually lifted today: the eased load after a break, else the usual one.
+            let kg = c.ease_back.as_ref().map_or(c.recommended_kg, |e| e.kg);
+            engine.plates_for(&c.load_type, kg).map(|n| Need { imp, n })
         })
         .collect()
 }

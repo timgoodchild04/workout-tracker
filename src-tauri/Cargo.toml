@@ -1,6 +1,6 @@
 [package]
 name = "workout-tracker"
-version = "0.3.0"
+version = "0.4.0"
 description = "Workout coach that reads and writes the Workout Tracker Google Sheet"
 edition = "2021"
 

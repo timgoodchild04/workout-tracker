@@ -19,6 +19,9 @@ pub const LIBRARY_FIRST_ROW: usize = 5;
 /// targets in U:V, all from row 5. Read as one block.
 pub const RANGE_PLAN: &str = "A5:V104";
 pub const PLAN_FIRST_ROW: usize = 5;
+/// 📅 Plan's "Session order" setting: label in R2, value in S2.
+pub const RANGE_PLAN_SETTINGS: &str = "R2:S2";
+pub const ROTATION: &str = "Rotation";
 /// Last 📅 Plan row the sheet's helper formulas and the Dashboard cover.
 pub const PLAN_LAST_ROW: usize = 104;
 /// ⚙️ Settings column holding each piece of equipment's Enabled? Yes/No.
@@ -204,6 +207,9 @@ pub struct Data {
     pub plan: Vec<Slot>,
     pub days: Vec<DayInfo>,
     pub targets: Vec<Target>,
+    /// "Weekday schedule" (default) or "Rotation" (📅 Plan S2).
+    #[serde(default)]
+    pub session_order: String,
     pub schedule: Vec<SchedDay>,
     pub log: Vec<LogEntry>,
 }
@@ -260,7 +266,7 @@ fn yes(c: &Cell) -> bool {
 impl Data {
     /// `library` is 📚 Exercises A5:N204, `plan` 📅 Plan A5:V104, `settings` A1:D100,
     /// `schedule` B13:E19, `log` A2:H…
-    pub fn from_grids(library: &Grid, plan: &Grid, settings: &Grid, schedule: &Grid, log: &Grid) -> Data {
+    pub fn from_grids(library: &Grid, plan: &Grid, plan_settings: &Grid, settings: &Grid, schedule: &Grid, log: &Grid) -> Data {
         let s = |r: usize, c: usize| at(settings, r - 1, c); // 1-based sheet rows
         let num = |r: usize, c: usize, d: f64| s(r, c).num().unwrap_or(d);
 
@@ -378,6 +384,7 @@ impl Data {
             })
             .collect();
 
-        Data { settings, library, plan: slots, days, targets, schedule, log }
+        let session_order = at(plan_settings, 0, 1).text();
+        Data { settings, library, plan: slots, days, targets, session_order, schedule, log }
     }
 }

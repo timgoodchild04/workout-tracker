@@ -133,14 +133,21 @@ impl Client {
     pub async fn fetch(&self) -> Result<Data> {
         let g = self
             .batch_get(
-                &[q(TAB_LIBRARY, RANGE_LIBRARY), q(TAB_PLAN, RANGE_PLAN), q(TAB_SETTINGS, RANGE_SETTINGS), q(TAB_SCHEDULE, RANGE_SCHEDULE), q(TAB_LOG, RANGE_LOG)],
+                &[
+                    q(TAB_LIBRARY, RANGE_LIBRARY),
+                    q(TAB_PLAN, RANGE_PLAN),
+                    q(TAB_PLAN, RANGE_PLAN_SETTINGS),
+                    q(TAB_SETTINGS, RANGE_SETTINGS),
+                    q(TAB_SCHEDULE, RANGE_SCHEDULE),
+                    q(TAB_LOG, RANGE_LOG),
+                ],
                 "UNFORMATTED_VALUE",
             )
             .await?;
-        if g.len() < 5 {
+        if g.len() < 6 {
             bail!("the sheet didn't return the expected tabs");
         }
-        Ok(Data::from_grids(&g[0], &g[1], &g[2], &g[3], &g[4]))
+        Ok(Data::from_grids(&g[0], &g[1], &g[2], &g[3], &g[4], &g[5]))
     }
 
     /// Set one cell to `value`, but only if `check_a1` (same tab) still reads `expect`.
@@ -184,6 +191,29 @@ impl Client {
             .bearer_auth(self.token().await?)
             .query(&[("valueInputOption", "USER_ENTERED")])
             .json(&json!({ "range": range, "majorDimension": "ROWS", "values": [values] }))
+            .send()
+            .await?;
+        Self::check(res).await?;
+        Ok(())
+    }
+
+    /// Clear A:H of a logged row (a delete from History). Re-read first: it must still
+    /// hold that date and exercise. The row stays as a blank line; everything that
+    /// reads the log skips blank rows, and new entries still go after the last one.
+    pub async fn clear_log_row(&self, row: usize, date: chrono::NaiveDate, exercise: &str) -> Result<()> {
+        let got = self.batch_get(&[q(TAB_LOG, &format!("A{row}:C{row}"))], "UNFORMATTED_VALUE").await?;
+        let cells = got.first().and_then(|g| g.first()).cloned().unwrap_or_default();
+        let (d, ex) = (cells.first().and_then(parse_date), cells.get(2).map(|c| c.text()).unwrap_or_default());
+        if d != Some(date) || ex != exercise {
+            bail!("row {row} of the Workout Log no longer holds {exercise} on {date} (it has {ex:?}). Sync and try again.");
+        }
+        let range = q(TAB_LOG, &format!("A{row}:H{row}"));
+        let res = self
+            .http
+            .put(format!("{API}/{}/values/{}", self.sheet_id, urlencoding::encode(&range)))
+            .bearer_auth(self.token().await?)
+            .query(&[("valueInputOption", "RAW")])
+            .json(&json!({ "range": range, "majorDimension": "ROWS", "values": [["", "", "", "", "", "", "", ""]] }))
             .send()
             .await?;
         Self::check(res).await?;

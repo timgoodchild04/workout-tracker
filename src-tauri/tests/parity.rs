@@ -217,3 +217,65 @@ fn write_preview_view() {
     let data = snapshot::load(std::path::Path::new(&path)).unwrap();
     std::fs::write(out, workout_tracker_lib::preview_view_json(data)).unwrap();
 }
+
+/// Ease-back, warm-ups and personal bests on the real log.
+#[test]
+fn ease_back_warmups_and_pbs() {
+    use workout_tracker_lib::coach::EASE_BACK_SHARE;
+    let Ok(path) = std::env::var("WT_SNAPSHOT") else { return };
+    let data = snapshot::load(std::path::Path::new(&path)).unwrap();
+    let engine = Engine::new(&data.settings);
+    let a = coach::analyse(&data, &engine);
+    let d = |m, day| chrono::NaiveDate::from_ymd_opt(2026, m, day).unwrap();
+
+    // Push viewed on 12 Oct: Overhead Press was last done on 31 Aug at 11kg (42 days).
+    let (cards, _) = coach::session_cards(&data, &engine, &a, "🦾 Day 1 — Push", d(10, 12));
+    let ohp = cards.iter().find(|c| c.exercise == "Standing Overhead Press").unwrap();
+    let eb = ohp.ease_back.as_ref().expect("OHP after a 6-week break should ease back");
+    assert_eq!((eb.days, eb.last_kg), (42, 11.0));
+    assert!(eb.kg <= 11.0 * EASE_BACK_SHARE + 1e-9 && eb.kg < ohp.recommended_kg, "{eb:?}");
+    eprintln!("OHP 12 Oct: usual {} -> ease back {} ({} days off)", ohp.recommended, eb.text, eb.days);
+    // Viewed on 15 Oct nothing is 10+ days stale for Pull.
+    let (pull, _) = coach::session_cards(&data, &engine, &a, "🐺 Day 2 — Pull", d(10, 16));
+    assert!(pull.iter().all(|c| c.ease_back.is_none()));
+
+    // Warm-ups: rising, lighter than the work, only on compound plate-loaded lifts.
+    for (day, date) in [("🦾 Day 1 — Push", d(10, 16)), ("🐺 Day 2 — Pull", d(10, 16)), ("🦵 Day 3 — Legs", d(10, 16))] {
+        let (cards, _) = coach::session_cards(&data, &engine, &a, day, date);
+        for c in &cards {
+            let work = c.ease_back.as_ref().map_or(c.recommended_kg, |e| e.kg);
+            let kgs: Vec<f64> = c.warmups.iter().map(|w| w.kg).collect();
+            assert!(kgs.windows(2).all(|w| w[0] < w[1]) && kgs.iter().all(|&k| k < work), "{} {kgs:?} vs {work}", c.exercise);
+            if !c.warmups.is_empty() {
+                assert!(coach::COMPOUND_PATTERNS.contains(&c.pattern.as_str()), "{} ({}) isn't a compound lift", c.exercise, c.pattern);
+                eprintln!("{:<26} work {:>5}kg  warm-up {}", c.exercise, work, c.warmups.iter().map(|w| format!("{} {}kg×{}", w.label, w.kg, w.reps)).collect::<Vec<_>>().join(", "));
+            }
+        }
+    }
+
+    // Personal bests.
+    let pbs = coach::personal_bests(&data, &a);
+    let find = |ex: &str, date| (0..data.log.len()).find(|&i| data.log[i].exercise == ex && data.log[i].date == date).unwrap();
+    assert!(pbs[find("Barbell Row", d(9, 1))], "first time at 23.5kg");
+    assert!(!pbs[find("Barbell Row", d(10, 15))], "same 23.5kg x 48 again");
+    assert!(!pbs[find("Barbell Row", d(8, 5))], "first ever entry");
+    eprintln!("{} PBs in {} entries", pbs.iter().filter(|&&p| p).count(), pbs.len());
+}
+
+/// Rotation mode on the real log: next up is the day after the last main session.
+#[test]
+fn rotation_follows_the_last_session() {
+    let Ok(path) = std::env::var("WT_SNAPSHOT") else { return };
+    let mut data = snapshot::load(std::path::Path::new(&path)).unwrap();
+    let d = |m, day| chrono::NaiveDate::from_ymd_opt(2026, m, day).unwrap();
+    assert_eq!(coach::today_for(&data, d(10, 16)).rotation, false, "weekday schedule by default");
+    data.session_order = workout_tracker_lib::model::ROTATION.into();
+    for (date, want) in [(d(10, 16), "🦵 Day 3 — Legs"), (d(10, 13), "🐺 Day 2 — Pull"), (d(8, 1), "🦾 Day 1 — Push")] {
+        let t = coach::today_for(&data, date);
+        assert!(t.rotation && !t.is_rest);
+        assert_eq!(t.session, want, "{date}: {}", t.notes);
+        eprintln!("{date}: {} ({})", t.session, t.notes);
+    }
+    // Morning keeps its weekday slot in rotation mode.
+    assert_eq!(coach::today_for(&data, d(10, 16)).morning, "🌅 Morning");
+}

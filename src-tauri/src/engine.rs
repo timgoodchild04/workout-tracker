@@ -190,6 +190,24 @@ impl Engine {
         None
     }
 
+    /// The heaviest buildable load at or below `target` (fewest plates on a tie), or the
+    /// lightest one if nothing is that light. For easing back and warm-ups, which must
+    /// never round up past what's intended.
+    pub fn at_most(&self, load_type: &str, equipment: &str, target: f64) -> Option<Load> {
+        let t = round2(target) + 1e-9;
+        if let Some(tab) = self.table(load_type) {
+            let under = tab.iter().filter(|c| c.total <= t).max_by(|a, b| a.total.partial_cmp(&b.total).unwrap().then(b.rank().partial_cmp(&a.rank()).unwrap()));
+            let pick = under.or_else(|| tab.iter().min_by(|a, b| a.total.partial_cmp(&b.total).unwrap()));
+            return pick.map(|c| Load { kg: c.total, text: c.text.clone() });
+        }
+        if load_type == FIXED {
+            let steps: Vec<_> = self.settings.ladder.iter().filter(|s| s.equipment == equipment).collect();
+            let pick = steps.iter().filter(|s| s.kg <= t).max_by(|a, b| a.kg.partial_cmp(&b.kg).unwrap()).or_else(|| steps.first());
+            return pick.map(|s| Load { kg: s.kg, text: format!("{} — ~{}kg equivalent", s.label, fmt_num(s.kg)) });
+        }
+        None
+    }
+
     /// The next load strictly above `current`. `None` when the load type has no
     /// notion of weight (bodyweight / unknown); `Some(0.0)` when nothing heavier exists.
     pub fn next_up(&self, load_type: &str, equipment: &str, current: f64) -> Option<f64> {

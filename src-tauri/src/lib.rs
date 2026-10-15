@@ -100,6 +100,12 @@ pub struct HistRow {
     verdict: Verdict,
     bodyweight: bool,
     pending: bool,
+    /// Beat every earlier entry of this exercise.
+    pb: bool,
+    /// Sheet row (None while queued), for editing and deleting from History.
+    row: Option<usize>,
+    /// The four set boxes as logged, for editing.
+    set_values: [Option<f64>; 4],
 }
 
 #[derive(Serialize)]
@@ -129,6 +135,7 @@ pub struct View {
     /// 📅 Plan slots with what each one uses today.
     plan: Vec<SlotView>,
     days: Vec<DayInfo>,
+    session_order: String,
     suggestions: Vec<suggest::Suggestion>,
     volume: Vec<suggest::VolumeRow>,
     settings: Option<Settings>,
@@ -187,6 +194,7 @@ fn build_view(s: &Inner) -> View {
         library: vec![],
         plan: vec![],
         days: vec![],
+        session_order: String::new(),
         suggestions: vec![],
         volume: vec![],
         settings: None,
@@ -208,7 +216,7 @@ fn build_view(s: &Inner) -> View {
     view.status.rows_left = Some(model::LOG_LAST_FORMULA_ROW as i64 - last_row as i64 - s.pending.len() as i64);
     let today = Local::now().date_naive();
     let date = s.view_date.unwrap_or(today);
-    view.today = Some(coach::today(&data.schedule, today));
+    view.today = Some(coach::today_for(&data, today));
     // Plates stay on between sessions: start from what's on the kit now, including
     // anything already logged on this date.
     let (start, from) = plan::kit_through(&data, &analysis, &engine, date);
@@ -222,12 +230,14 @@ fn build_view(s: &Inner) -> View {
             SessionView { name, cards, skipped, switched_off, programme_plan, best_plan }
         })
         .collect();
+    let pbs = coach::personal_bests(&data, &analysis);
     view.history = data
         .log
         .iter()
         .zip(&analysis)
+        .zip(&pbs)
         .rev()
-        .map(|(e, a)| HistRow {
+        .map(|((e, a), &pb)| HistRow {
             date: e.date,
             workout: e.workout.clone(),
             exercise: e.exercise.clone(),
@@ -239,6 +249,9 @@ fn build_view(s: &Inner) -> View {
             verdict: a.verdict,
             bodyweight: a.load_type == engine::BODYWEIGHT,
             pending: e.queued || e.row.is_none(),
+            pb,
+            row: e.row,
+            set_values: e.sets,
         })
         .collect();
     view.progress = coach::progress(&data, &engine, &analysis);
@@ -252,6 +265,7 @@ fn build_view(s: &Inner) -> View {
         })
         .collect();
     view.days = data.days.clone();
+    view.session_order = data.session_order.clone();
     view.suggestions = suggest::suggestions(&data, &engine, &analysis, today);
     view.volume = suggest::volume(&data, &engine, today);
     view.settings = Some(data.settings.clone());
@@ -600,6 +614,50 @@ async fn set_slot_sets(state: State<'_, AppState>, row: usize, exercise: String,
     Ok(build_view(&state.0.lock().unwrap()))
 }
 
+/// Delete a logged exercise (from History). Queued and not yet sent: just drop it
+/// from the queue. In the sheet: clear its log row, after checking the row still
+/// holds that date and exercise.
+#[tauri::command]
+async fn delete_entry(state: State<'_, AppState>, row: Option<usize>, date: String, exercise: String) -> Result<View, String> {
+    let date = NaiveDate::parse_from_str(&date, "%Y-%m-%d").map_err(|_| format!("bad date {date}"))?;
+    {
+        let mut s = state.0.lock().unwrap();
+        let before = s.pending.len();
+        // Drop any queued add or edit of this entry.
+        s.pending.retain(|p| !(p.date == date && p.exercise == exercise && (row.is_none() || p.row == row)));
+        let dropped = s.pending.len() != before;
+        s.save_pending();
+        if row.is_none() {
+            if !dropped {
+                return Err(format!("{exercise} on {date} isn't in the queue any more."));
+            }
+            return Ok(build_view(&s));
+        }
+    }
+    let config = state.0.lock().unwrap().config.clone();
+    let Source::Sheets(client) = source(&config)? else {
+        return Err("Snapshot mode is read-only. Connect to the Google Sheet to delete entries.".into());
+    };
+    client.clear_log_row(row.unwrap(), date, &exercise).await.map_err(|e| format!("{e:#}"))?;
+    sync(&state).await;
+    Ok(build_view(&state.0.lock().unwrap()))
+}
+
+/// Weekday schedule or rotation (📅 Plan S2).
+#[tauri::command]
+async fn set_session_order(state: State<'_, AppState>, order: String) -> Result<View, String> {
+    if order != "Weekday schedule" && order != model::ROTATION {
+        return Err(format!("unknown session order {order}"));
+    }
+    let config = state.0.lock().unwrap().config.clone();
+    let Source::Sheets(client) = source(&config)? else {
+        return Err("Snapshot mode is read-only. Connect to the Google Sheet to change this.".into());
+    };
+    client.set_cell(model::TAB_PLAN, "R2", "Session order", "S2", &order).await.map_err(|e| format!("{e:#}"))?;
+    sync(&state).await;
+    Ok(build_view(&state.0.lock().unwrap()))
+}
+
 /// Remove a slot: clear its 📅 Plan row (A:E).
 #[tauri::command]
 async fn remove_slot(state: State<'_, AppState>, row: usize, exercise: String) -> Result<View, String> {
@@ -739,7 +797,7 @@ pub fn run() {
             }), tauri::async_runtime::Mutex::new(())));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![load, save_entry, discard_pending, save_config, data_dir, check_update, install_update, set_equipment, set_slot, add_slot, swap_slot, set_slot_sets, remove_slot, import_file, platform_info])
+        .invoke_handler(tauri::generate_handler![load, save_entry, discard_pending, save_config, data_dir, check_update, install_update, set_equipment, set_slot, add_slot, swap_slot, set_slot_sets, remove_slot, set_session_order, delete_entry, import_file, platform_info])
         .run(tauri::generate_context!())
         .expect("error while running the app");
 }

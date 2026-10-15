@@ -12,6 +12,7 @@ const S = {
   historyFilter: "",
   busy: false,
   update: null,         // { current, latest, notes } from check_update, plus checking / installing / error
+  editing: null,        // History row being edited ("date|exercise|row")
   order: (() => { try { return localStorage.getItem("order") || "best"; } catch { return "best"; } })(),
 };
 
@@ -58,6 +59,7 @@ function splitLoad(text, loadType) {
 function coachLine(c) {
   const bw = c.load_type === "Bodyweight";
   const range = `${num(c.rep_low)}–${num(c.rep_high)}`;
+  if (c.ease_back) return `Back after a break: use the lighter load above and aim for ${range} reps. The coach builds you back up from what you do today.`;
   const t = c.instruction || "";
   switch (c.verdict) {
     case "new":
@@ -284,6 +286,9 @@ function renderToday(el) {
   $("#log-date").addEventListener("change", (e) => { S.logDate = e.target.value || isoToday(); load(false); });
   $$("a[data-url]", el).forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); openUrl(a.dataset.url); }));
   $$(".card input", el).forEach((inp) => inp.addEventListener("input", onEntryInput));
+  $$('.card input[data-k="set"]', el).forEach((inp) => inp.addEventListener("change", () => {
+    if (inp.value !== "") startRest(inp.closest(".card"));
+  }));
   $$(".card", el).forEach((c) => c.addEventListener("focusout", onCardLeave));
   $$(".copy-btn", el).forEach((b) => b.addEventListener("click", () => fillSets(b.closest(".card"))));
   updateSavedCount();
@@ -292,11 +297,13 @@ function renderToday(el) {
 function card(c, i, d, pos, changes) {
   const bw = c.load_type === "Bodyweight";
   const lg = c.logged;
-  const [main, detail] = splitLoad(c.recommended, c.load_type);
+  // First session back after a break: show (and pre-fill) the lighter load.
+  const eb = !lg && c.ease_back;
+  const [main, detail] = splitLoad(eb ? eb.text : c.recommended, c.load_type);
   const n = Math.min(c.sets, 4);
   // Unsaved edits (the local draft) win over what's saved, so nothing typed is lost on a re-render.
   const sets = d?.sets ?? (lg ? lg.sets.map((x) => (x == null ? "" : num(x))) : []);
-  const weight = d?.weight ?? (lg ? lg.weight : bw ? 0 : c.recommended_kg);
+  const weight = d?.weight ?? (lg ? lg.weight : bw ? 0 : eb ? eb.kg : c.recommended_kg);
   const done = lg || sets.some((x) => x !== "" && x != null);
   const title = c.video
     ? `<a href="#" data-url="${esc(c.video)}" title="Watch how-to video">${esc(c.exercise)}<span class="play">▶ video</span></a>`
@@ -314,9 +321,12 @@ function card(c, i, d, pos, changes) {
       <span class="save-state">${saveState(c, d)}</span>
     </div>
     <div class="load">
-      <div><div class="sublabel">${lg ? "Target was" : "Load today"}</div><div class="load-main">${esc(main)}</div><div class="load-detail">${esc(detail)}</div></div>
+      <div><div class="sublabel">${lg ? "Target was" : eb ? "Easing back in" : "Load today"}</div><div class="load-main">${esc(main)}</div><div class="load-detail">${esc(detail)}</div>
+        ${eb ? `<div class="ease">${eb.days} days since you last did this, so ${num(eb.kg)}kg rather than the usual ${num(c.recommended_kg)}kg. Back to normal progression next time.</div>` : ""}</div>
       <div><div class="sublabel">History</div><div class="last">${last}</div></div>
     </div>
+    ${!lg && c.warmups.length ? `<div class="warmup"><span class="sublabel">Warm-up first</span>${c.warmups.map((w) =>
+      `<span class="wu"><b>${esc(w.label === "Empty bar" ? "Empty bar" : num(w.kg) + "kg")}</b> × ${w.reps}${w.label === "Empty bar" ? "" : `<span class="muted"> · ${esc(w.text.split(" — ")[1] ?? w.text)}</span>`}</span>`).join("")}</div>` : ""}
     ${changes.length ? `<div class="swap"><span class="sublabel">Plates before this exercise</span>${changes.map((x) => `<div class="${x.startsWith("Sleeve now") ? "sleeve" : ""}">${esc(x)}</div>`).join("")}</div>` : ""}
     <div class="instr" title="${esc(lg ? lg.decision : c.instruction)}">${lg ? `<b>Next time:</b> ${esc(nextLine(lg.decision))}` : esc(coachLine(c))}</div>
     <div class="entry">
@@ -370,7 +380,7 @@ function saveState(c, d) {
   if (saving.has(ex)) return pill("queued", "Saving…");
   if (saveErrors[ex]) return `<span title="${esc(saveErrors[ex])}">${pill("reduce", "Not saved")}</span>`;
   if (unsaved(c, d)) return `<span title="Saves once every set has a number in it. Put 0 for a set you didn't do.">${pill("queued", "Fill every set to save")}</span>`;
-  if (c.logged) return c.logged.pending ? pill("queued", "Queued") : pill("increase", "✓ Saved");
+  if (c.logged) return (c.logged.pb ? pill("new", "🏆 PB") + " " : "") + (c.logged.pending ? pill("queued", "Queued") : pill("increase", "✓ Saved"));
   return pill(c.verdict);
 }
 
@@ -401,6 +411,64 @@ function renderWhenIdle() {
     renderQueued = false;
     render();
   }
+}
+
+// ---------------------------------------------------------------- rest timer
+// Starts when a set box gets a number (on leaving the box): the card's rest length,
+// counting down in a bar at the bottom. +30s, or Skip. A short beep at zero.
+
+let rest = null; // { end, total, name, tick }
+
+function startRest(cardEl) {
+  const c = currentCards()[cardEl.dataset.i];
+  if (!c) return;
+  stopRest();
+  rest = { end: Date.now() + c.rest_secs * 1000, name: c.exercise };
+  rest.tick = setInterval(drawRest, 250);
+  drawRest();
+}
+
+function stopRest() {
+  if (rest) clearInterval(rest.tick);
+  rest = null;
+  $("#rest")?.remove();
+}
+
+function drawRest() {
+  if (!rest) return;
+  const left = Math.max(0, Math.round((rest.end - Date.now()) / 1000));
+  let bar = $("#rest");
+  if (!bar) {
+    document.body.insertAdjacentHTML("beforeend", `<div id="rest" class="rest-bar" role="timer" aria-live="off">
+      <span class="rest-label"></span><span class="rest-time"></span>
+      <button class="btn" id="rest-more">+30s</button><button class="btn" id="rest-skip">Skip</button></div>`);
+    bar = $("#rest");
+    $("#rest-more").addEventListener("click", () => { if (rest) { rest.end = Math.max(rest.end, Date.now()) + 30000; drawRest(); } });
+    $("#rest-skip").addEventListener("click", stopRest);
+  }
+  $(".rest-label", bar).textContent = left ? `Rest · ${rest.name}` : `Rest done · ${rest.name}`;
+  $(".rest-time", bar).textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+  bar.classList.toggle("done", !left);
+  if (!left && !rest.beeped) {
+    rest.beeped = true;
+    beep();
+    setTimeout(() => { if (rest && rest.end <= Date.now()) stopRest(); }, 8000);
+  }
+}
+
+function beep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    for (const at of [0, 0.25]) {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.frequency.value = 880;
+      g.gain.setValueAtTime(0.15, ctx.currentTime + at);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + at + 0.2);
+      o.connect(g).connect(ctx.destination);
+      o.start(ctx.currentTime + at);
+      o.stop(ctx.currentTime + at + 0.2);
+    }
+  } catch {}
 }
 
 function onEntryInput(e) {
@@ -478,20 +546,59 @@ function renderHistory(el) {
   let html = `<h1>History</h1><p class="sub">Every logged exercise, newest first. ${rows.length} entries.</p>
     <div class="toolbar"><label class="field">Exercise
       <select id="hist-filter"><option value="">All exercises</option>${names.map((n) => `<option ${n === S.historyFilter ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></label></div>
-    <div class="table-wrap"><table><thead><tr><th>Exercise</th><th class="num">Weight</th><th>Reps</th><th class="num">Total</th><th class="num">Volume</th><th>Outcome</th></tr></thead><tbody>`;
+    <div class="table-wrap"><table><thead><tr><th>Exercise</th><th class="num">Weight</th><th>Reps</th><th class="num">Total</th><th class="num">Volume</th><th>Outcome</th><th></th></tr></thead><tbody>`;
   let group = "";
   for (const h of rows) {
     const g = `${h.date}|${h.workout}`;
     if (g !== group && !S.historyFilter) {
       group = g;
-      html += `<tr class="group"><td colspan="6">${esc(fmtDate(h.date, { weekday: "short", day: "numeric", month: "short", year: "numeric" }))} · ${esc(h.workout)}</td></tr>`;
+      html += `<tr class="group"><td colspan="7">${esc(fmtDate(h.date, { weekday: "short", day: "numeric", month: "short", year: "numeric" }))} · ${esc(h.workout)}</td></tr>`;
+    }
+    const key = `${h.date}|${h.exercise}|${h.row ?? "q"}`;
+    const actions = `<td class="hist-actions"><div><button class="icon-btn" data-edit="${esc(key)}" title="Edit" aria-label="Edit ${esc(h.exercise)} on ${esc(h.date)}">✎</button>
+      <button class="icon-btn" data-del="${esc(key)}" title="Delete" aria-label="Delete ${esc(h.exercise)} on ${esc(h.date)}">×</button></div></td>`;
+    if (S.editing === key) {
+      html += `<tr class="editing" data-key="${esc(key)}"><td>${esc(h.exercise)}</td>
+        <td class="num">${h.bodyweight ? "BW" : `<input class="wt" type="number" step="0.5" min="0" data-k="weight" value="${esc(num(h.weight))}" aria-label="Weight">`}</td>
+        <td colspan="3">${[0, 1, 2, 3].map((k) => `<input type="number" min="0" step="1" data-k="set" value="${h.set_values[k] ?? ""}" aria-label="Set ${k + 1}">`).join("")}</td>
+        <td colspan="2"><button class="btn primary" data-save="${esc(key)}">Save</button> <button class="btn" data-cancel>Cancel</button></td></tr>`;
+      continue;
     }
     html += `<tr title="${esc(h.decision)}"><td>${esc(h.exercise)}${S.historyFilter ? `<div class="small muted">${esc(fmtDate(h.date))}</div>` : ""}</td>
       <td class="num">${h.bodyweight ? "BW" : num(h.weight) + "kg"}</td><td>${esc(h.sets)}</td><td class="num">${num(h.total_reps)}</td><td class="num">${h.bodyweight ? "—" : num(h.volume)}</td>
-      <td>${h.pending ? pill("queued", "Queued") + " " : ""}${pill(h.verdict)}</td></tr>`;
+      <td>${h.pb ? pill("new", "🏆 PB") + " " : ""}${h.pending ? pill("queued", "Queued") + " " : ""}${pill(h.verdict)}</td>${actions}</tr>`;
   }
   el.innerHTML = html + `</tbody></table></div>`;
   $("#hist-filter").addEventListener("change", (e) => { S.historyFilter = e.target.value; render(); });
+  const byKey = (key) => v.history.find((h) => `${h.date}|${h.exercise}|${h.row ?? "q"}` === key);
+  $$("[data-edit]", el).forEach((b) => b.addEventListener("click", () => { S.editing = b.dataset.edit; render(); }));
+  $$("[data-cancel]", el).forEach((b) => b.addEventListener("click", () => { S.editing = null; render(); }));
+  $$("[data-save]", el).forEach((b) => b.addEventListener("click", async () => {
+    const h = byKey(b.dataset.save), tr = b.closest("tr");
+    const sets = $$('input[data-k="set"]', tr).map((i) => (i.value === "" ? null : Number(i.value)));
+    if (sets.every((x) => x == null)) return toast("Enter at least one set, or delete the entry instead.");
+    const w = $('input[data-k="weight"]', tr);
+    const entry = { date: h.date, workout: h.workout, exercise: h.exercise, weight: w ? Number(w.value) || 0 : 0, sets, row: h.row ?? null };
+    setBusy(true);
+    try {
+      S.view = await invoke("save_entry", { entry });
+      S.editing = null;
+      toast(`${h.exercise} on ${fmtDate(h.date)} updated.`);
+    } catch (e) { toast(String(e), 6000); }
+    setBusy(false);
+    render();
+  }));
+  $$("[data-del]", el).forEach((b) => b.addEventListener("click", async () => {
+    const h = byKey(b.dataset.del);
+    if (!confirm(`Delete ${h.exercise} on ${fmtDate(h.date)} (${h.sets})? This clears its row in the sheet.`)) return;
+    setBusy(true);
+    try {
+      S.view = await invoke("delete_entry", { row: h.row ?? null, date: h.date, exercise: h.exercise });
+      toast(`${h.exercise} on ${fmtDate(h.date)} deleted.`);
+    } catch (e) { toast(String(e), 6000); }
+    setBusy(false);
+    render();
+  }));
 }
 
 // ---------------------------------------------------------------- Progress
@@ -816,6 +923,11 @@ function renderSettings(el) {
           <td>${toggle(`data-equip-row="${e.row}" data-name="${esc(e.name)}"`, e.enabled, `${e.name} on`)}</td></tr>`).join("")}
       </tbody></table></div></div>
     <div class="panel"><h3>Plan</h3>
+      <div class="row-inline"><label class="field">Session order
+        <select id="session-order" ${canSwitch && !S.busy ? "" : "disabled"}>
+          <option ${v.session_order !== "Rotation" ? "selected" : ""}>Weekday schedule</option>
+          <option ${v.session_order === "Rotation" ? "selected" : ""}>Rotation</option></select></label>
+        <span class="small muted">${v.session_order === "Rotation" ? "Today shows the day after your last main session, whatever the weekday. Morning still follows the weekday schedule." : "Today shows the session the Schedule tab gives that weekday."}</span></div>
       <p class="small muted" style="margin:0">Each day is a list of slots. Pick a different exercise for a slot from the same movement pattern, change its sets, switch it off, or remove it. "Add an exercise…" lists what suits that day first; the others show which days they suit. If an exercise's kit is off, the slot uses the next exercise in its pattern with kit on. Everything is saved to the sheet's 📅 Plan.</p>
       <div class="table-wrap"><table class="plan-edit"><thead><tr><th>Slot</th><th>Exercise</th><th>Sets</th><th>On</th><th></th></tr></thead><tbody>
         ${planEditor(v)}
@@ -830,6 +942,8 @@ function renderSettings(el) {
 
   $$("input[data-equip-row]", el).forEach((b) => b.addEventListener("change", () =>
     flip(b, "set_equipment", { row: +b.dataset.equipRow, name: b.dataset.name, enabled: b.checked })));
+  $("#session-order")?.addEventListener("change", (e) =>
+    planCall("set_session_order", { order: e.target.value }, `Session order: ${e.target.value}.`));
   $$("select.slot-add", el).forEach((sel) => sel.addEventListener("change", () => {
     if (sel.value) planCall("add_slot", { day: sel.dataset.day, exercise: sel.value }, `${sel.value} added to ${sel.dataset.day}.`);
   }));

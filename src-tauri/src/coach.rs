@@ -1,7 +1,7 @@
 //! Port of the 📝 Workout Log helper columns (I:AI), the 🏠 Dashboard and the
 //! 📈 Progress tab. Each function names the sheet column it reproduces.
 
-use crate::engine::{fmt_num, round2, Engine, Load, BODYWEIGHT, FIXED};
+use crate::engine::{fmt_num, round2, Engine, Load, BARBELL, BODYWEIGHT, DUMBBELL, FIXED};
 use crate::model::{Data, LibEx, LogEntry, SchedDay, Slot};
 use chrono::{Datelike, NaiveDate};
 use serde::Serialize;
@@ -207,10 +207,87 @@ pub struct Card {
     pub instruction: String,
     /// What was logged for this exercise on the card's date, if anything.
     pub logged: Option<Logged>,
+    /// First session back after a break: a lighter load to use instead of `recommended`
+    /// (which stays exactly what the sheet says).
+    pub ease_back: Option<EaseBack>,
+    /// Warm-up sets before the working sets (plate-loaded compound lifts only).
+    pub warmups: Vec<WarmUp>,
+    /// Rest between sets for the Today screen's timer.
+    pub rest_secs: u32,
     /// The slot's movement pattern (what can be swapped in).
     pub pattern: String,
     /// 📅 Plan row of the slot this card comes from.
     pub slot_row: usize,
+}
+
+/// Movement patterns that load the whole body enough to need warm-up sets.
+pub const COMPOUND_PATTERNS: [&str; 7] = ["Horizontal push", "Vertical push", "Vertical pull", "Horizontal pull", "Squat", "Lunge", "Hinge"];
+
+/// After this many days without an exercise, its first session back is eased.
+pub const EASE_BACK_AFTER_DAYS: i64 = 10;
+/// Share of the last load used to restart at after a break.
+pub const EASE_BACK_SHARE: f64 = 0.85;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EaseBack {
+    pub kg: f64,
+    pub text: String,
+    /// Days since the exercise was last done.
+    pub days: i64,
+    /// The load used last time.
+    pub last_kg: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WarmUp {
+    pub label: String,
+    pub reps: u32,
+    pub kg: f64,
+    pub text: String,
+}
+
+/// Warm-ups for a working load: empty bar (barbell only), then about 50% and 75%,
+/// each at or below the target, each heavier than the last and lighter than the work.
+/// None for light work (under 10kg), where warming up with weight adds nothing.
+pub fn warmups(engine: &Engine, load_type: &str, equipment: &str, working: f64) -> Vec<WarmUp> {
+    if !(load_type == BARBELL || load_type == DUMBBELL) || working < 10.0 {
+        return vec![];
+    }
+    let mut out: Vec<WarmUp> = Vec::new();
+    if load_type == BARBELL {
+        out.push(WarmUp { label: "Empty bar".into(), reps: 10, kg: engine.settings.bar_weight, text: "no plates".into() });
+    }
+    for (share, reps) in [(0.5, 8), (0.75, 5)] {
+        let Some(l) = engine.at_most(load_type, equipment, working * share) else { continue };
+        let floor = out.last().map_or(0.0, |w| w.kg);
+        if l.kg > floor + 1e-9 && l.kg < working - 1e-9 {
+            out.push(WarmUp { label: format!("{}%", (share * 100.0) as u32), reps, kg: l.kg, text: l.text });
+        }
+    }
+    out
+}
+
+/// For each log entry: does it beat every earlier entry of the same exercise?
+/// Weighted: a heavier load, or more total reps at the heaviest load so far.
+/// Bodyweight: more total reps (or seconds). An exercise's first entry isn't a PB.
+pub fn personal_bests(data: &Data, analysis: &[Analysis]) -> Vec<bool> {
+    let mut best: std::collections::HashMap<&str, (f64, f64)> = std::collections::HashMap::new(); // (weight, reps at it)
+    let mut out = Vec::with_capacity(data.log.len());
+    for (i, e) in data.log.iter().enumerate() {
+        let total = analysis[i].total_reps;
+        let bw = analysis[i].load_type == BODYWEIGHT;
+        let w = if bw { 0.0 } else { round2(e.weight) };
+        let pb = match best.get(e.exercise.as_str()) {
+            None => false,
+            Some(&(bw_, br)) => w > bw_ || (w == bw_ && total > br),
+        };
+        out.push(pb);
+        let entry = best.entry(e.exercise.as_str()).or_insert((w, total));
+        if w > entry.0 || (w == entry.0 && total > entry.1) {
+            *entry = (w, total);
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -221,6 +298,8 @@ pub struct Logged {
     pub verdict: Verdict,
     /// Still queued on this computer, not yet in the sheet.
     pub pending: bool,
+    /// Beat every earlier entry of this exercise.
+    pub pb: bool,
     /// Its row in the sheet, so an edit updates that row instead of adding another.
     pub row: Option<usize>,
 }
@@ -232,6 +311,7 @@ pub struct Logged {
 pub fn session_cards(data: &Data, engine: &Engine, analysis: &[Analysis], session: &str, date: NaiveDate) -> (Vec<Card>, Vec<String>) {
     let mut cards = Vec::new();
     let mut skipped = Vec::new();
+    let pbs = personal_bests(data, analysis);
     for slot in data.plan.iter().filter(|s| s.day == session && s.enabled) {
         let Some(lib) = resolve(data, engine, slot) else {
             skipped.push(slot.exercise.clone());
@@ -241,6 +321,7 @@ pub fn session_cards(data: &Data, engine: &Engine, analysis: &[Analysis], sessio
         let load_type = engine.load_type(equipment);
         let last = data.log.iter().rposition(|e| &e.exercise == exercise && e.date < date);
         let logged = data.log.iter().rposition(|e| &e.exercise == exercise && e.date == date).map(|i| Logged {
+            pb: pbs[i],
             weight: data.log[i].weight,
             sets: data.log[i].sets,
             decision: analysis[i].decision.clone(),
@@ -285,7 +366,25 @@ pub fn session_cards(data: &Data, engine: &Engine, analysis: &[Analysis], sessio
                 )
             }
         };
+        // First session back after a break: restart lighter than last time.
+        let ease_back = last.and_then(|n| {
+            let days = (date - data.log[n].date).num_days();
+            let weighted = [BARBELL, DUMBBELL, FIXED].contains(&load_type.as_str());
+            // Light loads (under 10kg) aren't worth easing: a step down is most of the weight.
+            if days <= EASE_BACK_AFTER_DAYS || !weighted || data.log[n].weight < 10.0 {
+                return None;
+            }
+            let l = engine.at_most(&load_type, equipment, data.log[n].weight * EASE_BACK_SHARE)?;
+            (l.kg < recommended_kg - 1e-9).then(|| EaseBack { kg: l.kg, text: l.text, days, last_kg: data.log[n].weight })
+        });
+        let compound = COMPOUND_PATTERNS.contains(&lib.pattern.as_str());
+        let working = ease_back.as_ref().map_or(recommended_kg, |e| e.kg);
+        let warmups = if compound { warmups(engine, &load_type, equipment, working) } else { vec![] };
+        let rest_secs = if compound { 150 } else if lib.pattern.starts_with("Core") { 60 } else { 90 };
         cards.push(Card {
+            ease_back,
+            warmups,
+            rest_secs,
             exercise: exercise.clone(),
             original: slot.exercise.clone(),
             substituted: lib.name != slot.exercise,
@@ -332,6 +431,44 @@ pub struct Today {
     pub next_training_day: String,
     /// Short session also due today, e.g. "🌅 Morning" ("" = none).
     pub morning: String,
+    /// Following the rotation rather than the weekday schedule.
+    pub rotation: bool,
+}
+
+/// Today's session in rotation mode: the day after the last main session logged
+/// before `date`, in the Days table's order (Morning-focus days aren't in the
+/// rotation; they keep their weekday slot). Nothing logged yet = the first day.
+pub fn rotation_next(data: &Data, date: NaiveDate) -> Option<(String, Option<(String, NaiveDate)>)> {
+    let mut order: Vec<String> = data.days.iter().filter(|d| d.focus != "Morning").map(|d| d.name.clone()).collect();
+    if order.is_empty() {
+        order = sessions(data).into_iter().filter(|s| data.focus(s) != "Morning").collect();
+    }
+    let first = order.first()?.clone();
+    let last = data.log.iter().filter(|e| e.date < date && order.contains(&e.workout)).max_by_key(|e| e.date);
+    Some(match last {
+        None => (first, None),
+        Some(e) => {
+            let i = order.iter().position(|d| d == &e.workout).unwrap();
+            (order[(i + 1) % order.len()].clone(), Some((e.workout.clone(), e.date)))
+        }
+    })
+}
+
+/// Today's session, by weekday or by rotation as 📅 Plan's Session order says.
+pub fn today_for(data: &Data, date: NaiveDate) -> Today {
+    let mut t = today(&data.schedule, date);
+    if data.session_order == crate::model::ROTATION {
+        if let Some((next, last)) = rotation_next(data, date) {
+            t.notes = match last {
+                Some((s, d)) => format!("Next in your rotation (last: {} on {})", s, d.format("%a %-d %b")),
+                None => "First in your rotation".into(),
+            };
+            t.session = next;
+            t.is_rest = false;
+            t.rotation = true;
+        }
+    }
+    t
 }
 
 pub fn today(schedule: &[SchedDay], date: NaiveDate) -> Today {
@@ -353,6 +490,7 @@ pub fn today(schedule: &[SchedDay], date: NaiveDate) -> Today {
         notes: day.notes,
         next_training_day: next,
         morning: day.morning,
+        rotation: false,
     }
 }
 

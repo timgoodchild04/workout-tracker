@@ -35,6 +35,25 @@ their pattern. The sheet works this out too (📅 Plan columns G:P), so the 🏠
 the app always agree; the parity tests check it. The old 💪 Workouts tab is hidden and no longer
 used; it keeps its name only so app versions before 0.3.0 still sync until they update.
 
+### On the Today screen
+
+- **Easing back in.** If an exercise hasn't been done for more than 10 days, its first session
+  back suggests about 85% of the load you used last (the nearest buildable load at or below
+  it), and the plate plan loads for that. Loads under 10kg aren't eased. From then on the
+  usual progression builds you back up from what you actually did.
+- **Warm-ups.** Plate-loaded compound lifts (presses, rows, pull-ups, squats, lunges, hinges)
+  of 10kg or more list warm-up sets: empty bar ×10 (barbell only), about 50% ×8 and 75% ×5,
+  each with its plates.
+- **Rest timer.** Entering a set starts a countdown at the bottom: 2½ minutes for compound
+  lifts, 90 seconds for isolation work, 60 seconds for core. +30s or Skip; it beeps at zero.
+- **Personal bests.** An entry that beats every earlier one for that exercise (heavier, or more
+  total reps at the heaviest weight; bodyweight: more total reps or seconds) gets a 🏆 PB on
+  its card and in History.
+- **Session order.** By default Today follows the Schedule tab's weekdays. Set *Session order*
+  to *Rotation* (Settings → Plan, or 📅 Plan S2) and Today offers the day after your last main
+  session instead, in the Days table's order, whatever the weekday. Morning still follows
+  the weekday schedule.
+
 ### Morning session
 
 Core and pull-up work is a short 🌅 Morning session, a day on 📅 Plan like any other. Column E of the Schedule tab says which days it's due (weekdays). On those days the
@@ -83,7 +102,13 @@ columns A:E and ⚙️ Settings column B (kit on/off):
 - swap a slot's exercise (C), change its sets (D) or switch it on/off (E): one cell, after
   re-reading the row to check it still holds that exercise;
 - add a slot: the first empty 📅 Plan row (re-read first to check it's still empty);
-- remove a slot: clears that row's A:E, after the same check.
+- remove a slot: clears that row's A:E, after the same check;
+- Session order: 📅 Plan S2.
+
+**History** can edit or delete any entry. An edit updates that log row in place (the same
+guarded update auto-save uses). A delete clears that row's A:H after re-reading it to check
+it still holds that date and exercise; the blank line is skipped by everything that reads the
+log. An entry still in the local queue is just edited or dropped there.
 
 The library (📚 Exercises), the Days and targets tables, and rep ranges are edited in the
 sheet.
