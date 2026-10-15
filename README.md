@@ -11,13 +11,33 @@ sessions into it, and the sheet keeps working on its own exactly as before.
 | Today | Today's scheduled session (or a rest-day note), the load to put on the bar with the plates for each side, last time's numbers and trend, and boxes to type in your reps. Each exercise saves itself to the sheet (see below), and its card shows Saved / Queued / Not saved yet. |
 | History | Every logged exercise, grouped by day, filterable by exercise. |
 | Progress | The 📈 Progress table, plus a chart of every session for the exercise you pick. |
-| Programme | The 💪 Workouts tab, read-only, with kit that's switched off struck through. |
-| Settings | The connection, switches to turn kit and individual exercises on or off (written to the sheet), the plates and coach rules, and updates. |
+| Coach | Suggestions from your plan and log, each with a one-click change to the plan: weekly sets per muscle against your targets, stalled exercises, and bodyweight moves ready for their harder (or easier) version. Plus a sets-per-muscle table. |
+| Programme | Your days (📅 Plan) with what each slot uses today, and the whole 📚 Exercises library by movement pattern, with the days each exercise suits and its easier/harder versions. |
+| Settings | The connection, kit on/off, the **plan editor** (swap an exercise, change sets, switch a slot off, remove it, or add one from a list that puts what suits the day first), coach rules, plates and updates. |
+
+### Exercises, days and kit
+
+The programme lives in two tabs:
+
+- **📚 Exercises** is the library: one row per exercise with its movement pattern
+  (horizontal push, hinge, core: rotation…), primary and secondary muscles, kit, default sets,
+  rep range and start weight, a how-to video, easier and harder versions, and **Fits**: the day
+  focuses it suits (Push, Pull, Legs, Upper, Morning). Add an exercise by adding a row.
+- **📅 Plan** holds your days. Each day is a list of **slots**: a pattern, the exercise you
+  want for it, an optional sets override and On?. Beside it, the **Days** table gives each day
+  its focus (that's what the Fits hints match against) and the **targets** table the weekly
+  sets per muscle the Coach aims for.
+
+If a slot's exercise needs kit that's switched off, the slot uses the first exercise in the
+library with the same pattern whose kit is on (so the order inside a pattern matters), or
+drops out if there's none. Switching kit on makes its exercises available in every slot of
+their pattern. The sheet works this out too (📅 Plan columns G:P), so the 🏠 Dashboard and
+the app always agree; the parity tests check it. The old 💪 Workouts tab is hidden and no longer
+used; it keeps its name only so app versions before 0.3.0 still sync until they update.
 
 ### Morning session
 
-Core and pull-up work is a short 🌅 Morning session, defined on 💪 Workouts like any other
-session. Column E of the Schedule tab says which days it's due (weekdays). On those days the
+Core and pull-up work is a short 🌅 Morning session, a day on 📅 Plan like any other. Column E of the Schedule tab says which days it's due (weekdays). On those days the
 Today screen opens on Morning until it's logged or it's past noon, then switches to the main
 session. The header shows whether Morning is done. Pick any session chip to override.
 
@@ -48,26 +68,25 @@ Only columns **A:H** (Date, Workout, Exercise, Weight, Set 1-4) of 📝 Workout 
 formulas in I:AI are already filled down every row, so the sheet's Dashboard and Progress
 tabs update as if you'd typed the rows yourself.
 
-There's no Save button. A card saves itself once every set is filled (after a 1.2 second
-pause, so a typo can be fixed first), when you move on to another card, or when you switch
-away from the app. A new exercise goes into the next empty row (the app re-reads column C
+There's no Save button. A card saves itself only once **every** set box has something in it;
+put 0 for a set you didn't do. It saves after a 1.2 second pause (so a typo can be fixed
+first), or straight away when you move on to another card or switch away from the app. A
+partly filled card is never saved; it shows "Fill every set to save". A new exercise goes into the next empty row (the app re-reads column C
 first, so two computers can't overwrite each other). Changing a card that's already saved
 updates **that same row**, after re-reading it to check it still holds that date and
-exercise. Clearing a saved card's boxes never deletes its row; delete it in the sheet.
+exercise. Clearing a saved card's boxes never changes or deletes its row; delete it in the sheet.
 Saves go one at a time, and a sync never runs twice at once, so nothing is written twice.
 
-The other writes all come from **Settings**. Each day's *Add an exercise…* list puts an
-exercise that's defined elsewhere in the programme (its own row, or an alternative) onto that
-day: the app copies its sets, reps, kit, start weight, video and alternative into the first
-empty 💪 Workouts row (re-read first to check it's still empty), switched on. The new row sits
-at the bottom of the sheet but shows with its day everywhere; tweak it in the sheet like any
-other. Then there are the on/off switches: an exercise's *Exercise on?*
-(💪 Workouts column U) and a piece of kit's *Enabled?* (⚙️ Settings column B), one Yes/No
-cell per click. Before each one the app checks that the row still holds that exercise or kit,
-so a rearranged sheet is never written to the wrong row. Switching an exercise off drops it
-from its session (the sheet's *Available?* column respects it, so the Dashboard agrees);
-switching kit off moves exercises to their alternatives. Everything else, including
-exercises, sets and rep ranges, is changed in the sheet.
+The other writes come from **Settings** and the **Coach** tab, and only touch 📅 Plan
+columns A:E and ⚙️ Settings column B (kit on/off):
+
+- swap a slot's exercise (C), change its sets (D) or switch it on/off (E): one cell, after
+  re-reading the row to check it still holds that exercise;
+- add a slot: the first empty 📅 Plan row (re-read first to check it's still empty);
+- remove a slot: clears that row's A:E, after the same check.
+
+The library (📚 Exercises), the Days and targets tables, and rep ranges are edited in the
+sheet.
 
 The log formulas stop at row 2000. The app warns you when fewer than 40 rows are left and
 refuses to write past that row.

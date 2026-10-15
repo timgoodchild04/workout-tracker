@@ -2,7 +2,7 @@
 //! 📈 Progress tab. Each function names the sheet column it reproduces.
 
 use crate::engine::{fmt_num, round2, Engine, Load, BODYWEIGHT, FIXED};
-use crate::model::{Data, LogEntry, ProgRow, SchedDay};
+use crate::model::{Data, LibEx, LogEntry, SchedDay, Slot};
 use chrono::{Datelike, NaiveDate};
 use serde::Serialize;
 
@@ -36,14 +36,17 @@ pub struct Analysis {
     pub load_type: String,            // AI
 }
 
-/// Find an exercise in the stacked {main; alt} programme columns, first match
-/// wins, exactly like the sheet's MATCH over {B5:B61; I5:I61}.
-/// Returns (rep_low, rep_high, equipment).
-fn programme_lookup<'a>(prog: &'a [ProgRow], exercise: &str) -> Option<(f64, f64, &'a str)> {
-    prog.iter()
-        .find(|p| p.exercise == exercise)
-        .map(|p| (p.rep_low, p.rep_high, p.equipment.as_str()))
-        .or_else(|| prog.iter().find(|p| p.alt_exercise == exercise).map(|p| (p.rep_low, p.rep_high, p.alt_equipment.as_str())))
+/// What a plan slot actually uses today, like 📅 Plan's "Use exercise" column: the
+/// slot's exercise if its kit is on, otherwise the first library exercise with the
+/// same pattern whose kit is on. None = switched off, or nothing available.
+pub fn resolve<'a>(data: &'a Data, engine: &Engine, slot: &Slot) -> Option<&'a LibEx> {
+    if !slot.enabled || slot.exercise.is_empty() {
+        return None;
+    }
+    match data.lib(&slot.exercise) {
+        Some(l) if engine.equipment_on(&l.equipment) => Some(l),
+        _ => data.library.iter().find(|l| l.pattern == slot.pattern && engine.equipment_on(&l.equipment)),
+    }
 }
 
 pub fn sets_text(e: &LogEntry) -> String {
@@ -74,8 +77,9 @@ pub fn analyse(data: &Data, engine: &Engine) -> Vec<Analysis> {
         let actual_sets = set_vals.len() as f64;
         let min_set = set_vals.iter().copied().fold(None, |m: Option<f64>, v| Some(m.map_or(v, |m| m.min(v)))).unwrap_or(0.0);
 
-        let (rep_low, rep_high, equipment) = match programme_lookup(&data.programme, &e.exercise) {
-            Some((l, h, eq)) => (Some(l), Some(h), eq.to_string()),
+        // Log P/Q/AC: rep range and kit from 📚 Exercises.
+        let (rep_low, rep_high, equipment) = match data.lib(&e.exercise) {
+            Some(l) => (Some(l.rep_low), Some(l.rep_high), l.equipment.clone()),
             None => (None, None, String::new()),
         };
         let load_type = engine.load_type(&equipment);
@@ -203,6 +207,10 @@ pub struct Card {
     pub instruction: String,
     /// What was logged for this exercise on the card's date, if anything.
     pub logged: Option<Logged>,
+    /// The slot's movement pattern (what can be swapped in).
+    pub pattern: String,
+    /// 📅 Plan row of the slot this card comes from.
+    pub slot_row: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -224,17 +232,12 @@ pub struct Logged {
 pub fn session_cards(data: &Data, engine: &Engine, analysis: &[Analysis], session: &str, date: NaiveDate) -> (Vec<Card>, Vec<String>) {
     let mut cards = Vec::new();
     let mut skipped = Vec::new();
-    for p in data.programme.iter().filter(|p| p.workout == session && p.enabled) {
-        let main_on = engine.equipment_on(&p.equipment);
-        let alt_on = !p.alt_exercise.is_empty() && engine.equipment_on(&p.alt_equipment);
-        let (exercise, equipment, start, video) = if main_on {
-            (&p.exercise, &p.equipment, p.start_weight, &p.video)
-        } else if alt_on {
-            (&p.alt_exercise, &p.alt_equipment, p.alt_start_weight, &p.alt_video)
-        } else {
-            skipped.push(p.exercise.clone());
+    for slot in data.plan.iter().filter(|s| s.day == session && s.enabled) {
+        let Some(lib) = resolve(data, engine, slot) else {
+            skipped.push(slot.exercise.clone());
             continue;
         };
+        let (exercise, equipment, start, video) = (&lib.name, &lib.equipment, lib.start_weight, &lib.video);
         let load_type = engine.load_type(equipment);
         let last = data.log.iter().rposition(|e| &e.exercise == exercise && e.date < date);
         let logged = data.log.iter().rposition(|e| &e.exercise == exercise && e.date == date).map(|i| Logged {
@@ -247,7 +250,7 @@ pub fn session_cards(data: &Data, engine: &Engine, analysis: &[Analysis], sessio
         });
         let (recommended, recommended_kg, previous_weight, previous_reps, previous_date, trend, verdict, instruction) = match last {
             None => {
-                let range = format!("{}–{}", fmt_num(p.rep_low), fmt_num(p.rep_high));
+                let range = format!("{}–{}", fmt_num(lib.rep_low), fmt_num(lib.rep_high));
                 let start_load = engine.closest(&load_type, equipment, start);
                 let (text, kg) = if load_type == BODYWEIGHT {
                     ("BW".to_string(), 0.0)
@@ -284,14 +287,16 @@ pub fn session_cards(data: &Data, engine: &Engine, analysis: &[Analysis], sessio
         };
         cards.push(Card {
             exercise: exercise.clone(),
-            original: p.exercise.clone(),
-            substituted: !main_on,
+            original: slot.exercise.clone(),
+            substituted: lib.name != slot.exercise,
             equipment: equipment.clone(),
             load_type,
             video: video.clone(),
-            sets: p.sets,
-            rep_low: p.rep_low,
-            rep_high: p.rep_high,
+            sets: slot.sets.unwrap_or(lib.sets),
+            rep_low: lib.rep_low,
+            rep_high: lib.rep_high,
+            pattern: lib.pattern.clone(),
+            slot_row: slot.row,
             recommended,
             recommended_kg,
             previous_weight,
@@ -306,12 +311,12 @@ pub fn session_cards(data: &Data, engine: &Engine, analysis: &[Analysis], sessio
     (cards, skipped)
 }
 
-/// Sessions in programme order, de-duplicated.
+/// Days in plan order, then any day from the Days table that has no slots yet.
 pub fn sessions(data: &Data) -> Vec<String> {
     let mut v: Vec<String> = Vec::new();
-    for p in &data.programme {
-        if !v.contains(&p.workout) {
-            v.push(p.workout.clone());
+    for d in data.plan.iter().map(|s| &s.day).chain(data.days.iter().map(|d| &d.name)) {
+        if !v.contains(d) {
+            v.push(d.clone());
         }
     }
     v
@@ -376,13 +381,14 @@ pub struct ProgressRow {
 }
 
 pub fn progress(data: &Data, engine: &Engine, analysis: &[Analysis]) -> Vec<ProgressRow> {
-    let mut names: Vec<String> = data.programme.iter().map(|p| p.exercise.clone()).chain(data.log.iter().map(|e| e.exercise.clone())).collect();
+    // 📈 Progress A: every exercise in the plan or the log.
+    let mut names: Vec<String> = data.plan.iter().map(|p| p.exercise.clone()).chain(data.log.iter().map(|e| e.exercise.clone())).collect();
     names.sort();
     names.dedup();
     names
         .into_iter()
         .map(|name| {
-            let equipment = programme_lookup(&data.programme, &name).map(|x| x.2.to_string()).unwrap_or_default();
+            let equipment = data.lib(&name).map(|l| l.equipment.clone()).unwrap_or_default();
             let bw = engine.load_type(&equipment) == BODYWEIGHT;
             let idx: Vec<usize> = data.log.iter().enumerate().filter(|(_, e)| e.exercise == name).map(|(i, _)| i).collect();
             let points: Vec<Point> = idx
@@ -400,7 +406,7 @@ pub fn progress(data: &Data, engine: &Engine, analysis: &[Analysis]) -> Vec<Prog
             let current = match last {
                 None => "—".into(),
                 Some(_) if bw => "BW".into(),
-                // No longer in the programme and logged without a weight: the sheet shows a blank cell.
+                // Not in the library and logged without a weight: the sheet shows a blank cell.
                 Some(i) if equipment.is_empty() && data.log[i].weight == 0.0 => String::new(),
                 Some(i) => kg(data.log[i].weight),
             };

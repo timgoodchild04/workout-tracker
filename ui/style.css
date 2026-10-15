@@ -208,3 +208,15 @@ details summary { cursor: pointer; font-weight: 600; }
 .switch input:checked + span::after { transform: translateX(16px); }
 .switch input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
 .switch input:disabled + span { opacity: .5; }
+
+/* Coach tab */
+.suggestion { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 0; border-top: 1px solid var(--line); }
+.suggestion:first-of-type { border-top: 0; }
+.suggestion .btn { flex: none; }
+td.short { color: var(--bad); font-weight: 600; }
+h2 { font-size: 18px; margin: 28px 0 4px; }
+
+/* Settings → Plan editor */
+.plan-edit select { max-width: 100%; }
+.plan-edit td:nth-child(2) { min-width: 220px; }
+.plan-edit .icon-btn { font-size: 18px; line-height: 1; }

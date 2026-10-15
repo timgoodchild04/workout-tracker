@@ -169,3 +169,51 @@ fn kit_matches_latest_logged_load() {
     let (state, from) = workout_tracker_lib::plan::kit_through(&data, &a, &engine, *days.last().unwrap());
     eprintln!("{} days checked; kit now (from {from:?}): {:?}", days.len(), workout_tracker_lib::plan::Kit::new(&state, from));
 }
+
+/// Every 📅 Plan slot uses the same exercise in the app as in the sheet's own
+/// "Use exercise" column (H), including stand-ins when kit is switched off.
+#[test]
+fn plan_slots_resolve_like_the_sheet() {
+    let Ok(path) = std::env::var("WT_SNAPSHOT") else { return };
+    let path = std::path::PathBuf::from(path);
+    let data = snapshot::load(&path).unwrap();
+    let engine = Engine::new(&data.settings);
+    let plan = tab(&path, workout_tracker_lib::model::TAB_PLAN);
+    let mut bad = 0;
+    for slot in &data.plan {
+        let ours = coach::resolve(&data, &engine, slot).map(|l| l.name.clone()).unwrap_or_default();
+        let sheet = cell(&plan, slot.row as u32 - 1, 7);
+        if ours != sheet {
+            bad += 1;
+            eprintln!("plan row {} {} / {}: sheet uses {sheet:?}, app uses {ours:?}", slot.row, slot.day, slot.exercise);
+        }
+    }
+    let stand_ins = data.plan.iter().filter(|s| coach::resolve(&data, &engine, s).is_some_and(|l| l.name != s.exercise)).count();
+    eprintln!("{} plan slots checked, {stand_ins} stand-ins, {bad} mismatches", data.plan.len());
+    assert_eq!(bad, 0);
+}
+
+/// Print the coach's suggestions for the snapshot (no assertions beyond "it runs").
+#[test]
+fn suggestions_run() {
+    let Ok(path) = std::env::var("WT_SNAPSHOT") else { return };
+    let data = snapshot::load(std::path::Path::new(&path)).unwrap();
+    let engine = Engine::new(&data.settings);
+    let a = coach::analyse(&data, &engine);
+    let vol = workout_tracker_lib::suggest::planned_volume(&data, &engine);
+    let mut v: Vec<_> = vol.iter().collect();
+    v.sort_by(|x, y| x.0.cmp(y.0));
+    eprintln!("planned sets/week: {v:?}");
+    for s in workout_tracker_lib::suggest::suggestions(&data, &engine, &a, chrono::NaiveDate::from_ymd_opt(2026, 10, 15).unwrap()) {
+        eprintln!("[{}] {} — {} {:?}", s.kind, s.title, s.detail, s.action);
+    }
+}
+
+/// Opt-in: write the UI's view for the snapshot to WT_VIEW_OUT, for headless screenshots.
+#[test]
+#[ignore]
+fn write_preview_view() {
+    let (Ok(path), Ok(out)) = (std::env::var("WT_SNAPSHOT"), std::env::var("WT_VIEW_OUT")) else { return };
+    let data = snapshot::load(std::path::Path::new(&path)).unwrap();
+    std::fs::write(out, workout_tracker_lib::preview_view_json(data)).unwrap();
+}

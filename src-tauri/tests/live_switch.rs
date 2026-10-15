@@ -10,21 +10,17 @@ fn switch_write_is_guarded() {
     let client = sheets::Client::new(std::path::Path::new(&key), DEFAULT_SHEET_ID).unwrap();
     tauri::async_runtime::block_on(async {
         let data = client.fetch().await.unwrap();
-        let p = data.programme.iter().find(|p| p.enabled).expect("an exercise that is on");
-        let value = if p.enabled { "Yes" } else { "No" };
+        let p = data.plan.iter().find(|p| p.enabled).expect("a slot that is on");
         // Same value back into the same cell: succeeds, changes nothing.
-        client
-            .set_cell(model::TAB_WORKOUTS, &format!("B{}", p.row), &p.exercise, &format!("{}{}", model::COL_EXERCISE_ON, p.row), value)
-            .await
-            .unwrap();
+        client.set_cell(model::TAB_PLAN, &format!("C{}", p.row), &p.exercise, &format!("E{}", p.row), "Yes").await.unwrap();
         // Wrong name for that row: refused before writing.
         let err = client
-            .set_cell(model::TAB_WORKOUTS, &format!("B{}", p.row), "Not An Exercise", &format!("{}{}", model::COL_EXERCISE_ON, p.row), "No")
+            .set_cell(model::TAB_PLAN, &format!("C{}", p.row), "Not An Exercise", &format!("E{}", p.row), "No")
             .await
             .unwrap_err();
-        eprintln!("row {} {}: write ok; mismatch refused: {err}", p.row, p.exercise);
+        eprintln!("plan row {} {}: write ok; mismatch refused: {err}", p.row, p.exercise);
         let after = client.fetch().await.unwrap();
-        assert!(after.programme.iter().find(|q| q.row == p.row).unwrap().enabled, "exercise must still be on");
+        assert!(after.plan.iter().find(|q| q.row == p.row).unwrap().enabled, "slot must still be on");
         let e = &after.settings.equipment[0];
         eprintln!("equipment row {} = {} ({})", e.row, e.name, if e.enabled { "on" } else { "off" });
     });
@@ -53,15 +49,15 @@ fn log_row_update_is_guarded() {
 /// Opt-in: adding an exercise never overwrites a row that's in use. Writes nothing.
 #[test]
 #[ignore]
-fn programme_row_write_needs_an_empty_row() {
+fn plan_row_write_needs_an_empty_row() {
     let key = std::env::var("WT_KEY").expect("set WT_KEY to the service-account key file");
     let client = sheets::Client::new(std::path::Path::new(&key), DEFAULT_SHEET_ID).unwrap();
     tauri::async_runtime::block_on(async {
         let data = client.fetch().await.unwrap();
-        let used = data.programme[0].row;
-        let err = client.write_programme_row(used, vec![serde_json::json!("x"); 12], "Yes").await.unwrap_err();
+        let used = data.plan[0].row;
+        let err = client.write_plan_row(used, vec![serde_json::json!("x"); 5]).await.unwrap_err();
         let after = client.fetch().await.unwrap();
-        assert_eq!(after.programme[0].exercise, data.programme[0].exercise);
-        eprintln!("row {used} ({}) in use: refused: {err}", data.programme[0].exercise);
+        assert_eq!(after.plan[0].exercise, data.plan[0].exercise);
+        eprintln!("plan row {used} ({}) in use: refused: {err}", data.plan[0].exercise);
     });
 }

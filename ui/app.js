@@ -147,7 +147,7 @@ function render() {
     $("#go-settings")?.addEventListener("click", () => switchTab("settings"));
     return;
   }
-  ({ today: renderToday, history: renderHistory, progress: renderProgress, programme: renderProgramme, settings: renderSettings })[S.tab](el);
+  ({ today: renderToday, history: renderHistory, progress: renderProgress, coach: renderCoach, programme: renderProgramme, settings: renderSettings })[S.tab](el);
 }
 
 function renderStatus() {
@@ -336,9 +336,10 @@ function readCard(cardEl) {
 }
 
 // ---------------------------------------------------------------- auto-save
-// Each card saves itself: once every set is filled (after a short pause, so a typo
-// can be fixed first) or when you move on to another card. A card that's already in
-// the sheet updates its own row. Saves run one at a time, in the order they happen.
+// A card saves itself only once every set box has something in it (0 for a set you
+// didn't do): after a short pause so a typo can be fixed, or straight away when you
+// move on. A partly filled card is never saved. A card that's already in the sheet
+// updates its own row. Saves run one at a time, in the order they happen.
 
 const SAVE_DELAY = 1200;
 const saveTimers = new Map();   // exercise -> pending timeout
@@ -368,7 +369,7 @@ function saveState(c, d) {
   const ex = c.exercise;
   if (saving.has(ex)) return pill("queued", "Saving…");
   if (saveErrors[ex]) return `<span title="${esc(saveErrors[ex])}">${pill("reduce", "Not saved")}</span>`;
-  if (unsaved(c, d)) return pill("queued", "Not saved yet");
+  if (unsaved(c, d)) return `<span title="Saves once every set has a number in it. Put 0 for a set you didn't do.">${pill("queued", "Fill every set to save")}</span>`;
   if (c.logged) return c.logged.pending ? pill("queued", "Queued") : pill("increase", "✓ Saved");
   return pill(c.verdict);
 }
@@ -430,7 +431,10 @@ function autoSave(cardEl) {
   const c = currentCards()[cardEl.dataset.i];
   if (!c || c.exercise !== ex) return;
   const v = cardEntry(cardEl);
-  if (v.sets.every((x) => x == null)) return; // nothing to save (clearing never deletes a saved row)
+  // Only a complete card saves: every set box filled, 0 for a set you didn't do.
+  // (So clearing boxes never deletes or changes a saved row either.)
+  const n = Number(cardEl.dataset.sets);
+  if (v.sets.slice(0, n).some((x) => x == null || Number.isNaN(x))) return;
   if (c.logged && v.weight === c.logged.weight && sameSets(v.sets, c.logged.sets)) return; // unchanged
   const entry = { date: S.logDate, workout: currentSession(), exercise: ex, weight: v.weight, sets: v.sets, row: c.logged?.row ?? null };
   saving.add(ex);
@@ -579,23 +583,102 @@ function drawChart(p) {
 
 // ---------------------------------------------------------------- Programme
 
+/** Slots grouped by day, days in session order (rows added later sit with their day). */
+function planByDay(v) {
+  const days = new Map(v.sessions.map((s) => [s.name, []]));
+  for (const p of v.plan) {
+    if (!days.has(p.day)) days.set(p.day, []);
+    days.get(p.day).push(p);
+  }
+  return days;
+}
+
+const focusOf = (v, day) => v.days.find((d) => d.name === day)?.focus ?? "";
+const libOf = (v, name) => v.library.find((l) => l.name === name);
+const kitOn = (v, name) => v.settings.equipment.some((e) => e.name === name && e.enabled);
+
+/** "fits 🦾 Day 1 — Push, 💪 Day 4 — Upper": the days whose focus the exercise suits. */
+function fitsDays(v, lib) {
+  const days = v.days.filter((d) => lib.fits.includes(d.focus)).map((d) => d.name);
+  return days.length ? `fits ${days.join(", ")}` : lib.fits.length ? `fits ${lib.fits.join(", ")}` : "";
+}
+
 function renderProgramme(el) {
   const v = S.view;
-  const on = (name) => v.settings.equipment.some((e) => e.name === name && e.enabled);
-  let html = `<h1>Programme</h1><p class="sub">Read from the sheet's 💪 Workouts tab. Edit exercises, sets and alternatives there; the app picks changes up on the next sync. Switch exercises and kit on or off in Settings.</p>
-    <div class="table-wrap"><table><thead><tr><th>Exercise</th><th>Sets × reps</th><th>Equipment</th><th class="num">Start</th><th>Alternative</th></tr></thead><tbody>`;
-  for (const [day, rows] of byDay(v.programme)) {
-    html += `<tr class="group"><td colspan="5">${esc(day)}</td></tr>`;
-    for (const p of rows) {
-      const mainOn = on(p.equipment);
-      html += `<tr><td class="${p.enabled ? "" : "off"}">${p.video ? `<a href="#" data-url="${esc(p.video)}">${esc(p.exercise)}</a>` : esc(p.exercise)}</td>
-        <td>${p.sets} × ${num(p.rep_low)}–${num(p.rep_high)}</td>
-        <td class="${mainOn ? "" : "off"}">${esc(p.equipment)}</td><td class="num">${num(p.start_weight)}kg</td>
-        <td>${p.alt_exercise ? `${esc(p.alt_exercise)} <span class="small muted">(${esc(p.alt_equipment)}, ${num(p.alt_start_weight)}kg)</span>` : '<span class="muted">—</span>'}</td></tr>`;
+  let html = `<h1>Programme</h1><p class="sub">Your days from the sheet's 📅 Plan, and every exercise in 📚 Exercises. Change the plan in Settings (or in the sheet); add exercises to the library in the sheet.</p>
+    <div class="table-wrap"><table><thead><tr><th>Exercise</th><th>Slot</th><th>Sets × reps</th><th>Equipment</th></tr></thead><tbody>`;
+  for (const [day, slots] of planByDay(v)) {
+    html += `<tr class="group"><td colspan="4">${esc(day)}${focusOf(v, day) ? ` <span class="muted">· ${esc(focusOf(v, day))}</span>` : ""}</td></tr>`;
+    for (const p of slots) {
+      const lib = libOf(v, p.uses || p.exercise);
+      const name = p.uses || p.exercise;
+      const link = lib?.video ? `<a href="#" data-url="${esc(lib.video)}">${esc(name)}</a>` : esc(name);
+      const note = !p.enabled ? ' <span class="small muted">(switched off)</span>'
+        : p.stand_in ? ` <span class="small muted">(kit off: instead of ${esc(p.exercise)})</span>`
+        : !p.uses ? ' <span class="small muted">(no kit for this, skipped)</span>' : "";
+      html += `<tr><td class="${p.enabled && p.uses ? "" : "off"}">${link}${note}</td><td class="muted">${esc(p.pattern)}</td>
+        <td>${lib ? `${p.sets ?? lib.sets} × ${num(lib.rep_low)}–${num(lib.rep_high)}` : ""}</td><td>${esc(lib?.equipment ?? "")}</td></tr>`;
     }
+  }
+  html += `</tbody></table></div>
+    <h2>Exercise library</h2><p class="sub">Grouped by movement pattern. When kit is off, a slot uses the first exercise in its pattern whose kit is on, in this order.</p>
+    <div class="table-wrap"><table><thead><tr><th>Exercise</th><th>Equipment</th><th>Sets × reps</th><th class="num">Start</th><th>Fits</th><th>Easier / harder</th></tr></thead><tbody>`;
+  let pattern = "";
+  for (const l of v.library) {
+    if (l.pattern !== pattern) { pattern = l.pattern; html += `<tr class="group"><td colspan="6">${esc(pattern)}</td></tr>`; }
+    html += `<tr title="${esc(l.notes)}"><td>${l.video ? `<a href="#" data-url="${esc(l.video)}">${esc(l.name)}</a>` : esc(l.name)}<div class="small muted">${esc([l.primary, ...l.secondary].join(", "))}</div></td>
+      <td class="${kitOn(v, l.equipment) ? "" : "off"}">${esc(l.equipment)}</td><td>${l.sets} × ${num(l.rep_low)}–${num(l.rep_high)}</td>
+      <td class="num">${num(l.start_weight)}kg</td><td class="small">${esc(fitsDays(v, l))}</td>
+      <td class="small">${[l.easier && `← ${esc(l.easier)}`, l.harder && `${esc(l.harder)} →`].filter(Boolean).join("<br>") || '<span class="muted">—</span>'}</td></tr>`;
   }
   el.innerHTML = html + `</tbody></table></div>`;
   $$("a[data-url]", el).forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); openUrl(a.dataset.url); }));
+}
+
+// ---------------------------------------------------------------- Coach
+
+function renderCoach(el) {
+  const v = S.view;
+  const live = v.status.mode === "sheets" && v.status.online;
+  const groups = [["volume", "Weekly volume"], ["stall", "Stalled exercises"], ["progress", "Bodyweight progressions"]];
+  const actionLabel = (a) => !a ? "" : a.kind === "add" ? `Add ${a.exercise}` : a.kind === "swap" ? `Swap to ${a.to}` : `Set ${a.sets} sets`;
+  let html = `<h1>Coach</h1><p class="sub">Suggestions from your plan and your log. Each one changes the 📅 Plan only when you press its button.</p>`;
+  for (const [kind, title] of groups) {
+    const list = v.suggestions.map((s, i) => [s, i]).filter(([s]) => s.kind === kind);
+    if (!list.length) continue;
+    html += `<div class="panel"><h3>${title}</h3>${list.map(([s, i]) => `<div class="suggestion">
+        <div><b>${esc(s.title)}</b><div class="small muted">${esc(s.detail)}</div></div>
+        ${s.action ? `<button class="btn" data-apply="${i}" ${live && !S.busy ? "" : "disabled"}>${esc(actionLabel(s.action))}</button>` : ""}
+      </div>`).join("")}</div>`;
+  }
+  if (!v.suggestions.length) html += `<div class="panel"><p class="muted" style="margin:0">Nothing to suggest right now: volume is on target and nothing has stalled.</p></div>`;
+  html += `<div class="panel"><h3>Sets per muscle</h3>
+    <p class="small muted" style="margin:0">Planned = what your days give each muscle per week as scheduled (secondary muscles count half). Targets live on 📅 Plan, columns U:V.</p>
+    <div class="table-wrap"><table><thead><tr><th>Muscle</th><th class="num">Planned / week</th><th class="num">Target</th><th class="num">Last 7 days</th></tr></thead><tbody>
+    ${v.volume.map((r) => `<tr><td>${esc(r.muscle)}</td><td class="num ${r.target && r.planned < r.target * 0.8 ? "short" : ""}">${num(r.planned)}</td>
+      <td class="num">${r.target ? num(r.target) : "—"}</td><td class="num">${num(r.last_7_days)}</td></tr>`).join("")}
+    </tbody></table></div></div>`;
+  el.innerHTML = html;
+  $$("[data-apply]", el).forEach((b) => b.addEventListener("click", () => applyAction(v.suggestions[b.dataset.apply].action)));
+}
+
+async function applyAction(a) {
+  if (a.kind === "add") return planCall("add_slot", { day: a.day, exercise: a.exercise }, `${a.exercise} added to ${a.day}.`);
+  if (a.kind === "swap") return planCall("swap_slot", { row: a.row, from: a.from, to: a.to }, `${a.from} swapped for ${a.to}.`);
+  if (a.kind === "sets") return planCall("set_slot_sets", { row: a.row, exercise: a.exercise, sets: a.sets }, `${a.exercise}: ${a.sets} sets.`);
+}
+
+/** Run a plan-changing command and re-render with the result. */
+async function planCall(cmd, args, done) {
+  setBusy(true);
+  try {
+    S.view = await invoke(cmd, args);
+    toast(done);
+  } catch (e) {
+    toast(String(e), 6000);
+  }
+  setBusy(false);
+  render();
 }
 
 // ---------------------------------------------------------------- Settings
@@ -606,48 +689,37 @@ function toggle(attrs, on, label) {
   return `<label class="switch"><input type="checkbox" ${attrs} ${on ? "checked" : ""} ${live && !S.busy ? "" : "disabled"} aria-label="${esc(label)}"><span></span></label>`;
 }
 
-/** Programme rows grouped by day, days in programme order (rows added later sit with their day). */
-function byDay(programme) {
-  const days = new Map();
-  for (const p of programme) {
-    if (!days.has(p.workout)) days.set(p.workout, []);
-    days.get(p.workout).push(p);
-  }
-  return days;
-}
-
-/** Exercises defined anywhere in the programme (own row or as an alternative) that aren't on `rows`' day. */
-function addable(v, rows) {
-  const onDay = new Set(rows.flatMap((p) => [p.exercise, p.alt_exercise].filter(Boolean)));
-  const kit = new Map();
-  for (const p of v.programme) {
-    if (!kit.has(p.exercise)) kit.set(p.exercise, p.equipment);
-    if (p.alt_exercise && !kit.has(p.alt_exercise)) kit.set(p.alt_exercise, p.alt_equipment);
-  }
-  return [...kit].filter(([name]) => !onDay.has(name)).sort(([a], [b]) => a.localeCompare(b));
-}
-
-function exerciseRows(v) {
-  const kitOn = (name) => v.settings.equipment.some((e) => e.name === name && e.enabled);
-  const live = v.status.mode === "sheets" && v.status.online;
+/** Settings → Plan: each day's slots (swap, sets, on/off, remove) and an add list with day hints. */
+function planEditor(v) {
+  const live = v.status.mode === "sheets" && v.status.online && !S.busy;
+  const dis = live ? "" : "disabled";
   let html = "";
-  for (const [day, rows] of byDay(v.programme)) {
-    html += `<tr class="group"><td colspan="3">${esc(day)}</td></tr>`;
-    for (const p of rows) html += exerciseRow(p, kitOn);
-    const options = addable(v, rows)
-      .map(([name, eq]) => `<option value="${esc(name)}">${esc(name)} (${esc(eq)}${kitOn(eq) ? "" : ", kit off"})</option>`).join("");
-    html += `<tr><td colspan="3"><select class="add-exercise" data-day="${esc(day)}" aria-label="Add an exercise to ${esc(day)}" ${live && !S.busy && options ? "" : "disabled"}>
-      <option value="">${options ? "Add an exercise…" : "Nothing else to add"}</option>${options}</select></td></tr>`;
+  for (const [day, slots] of planByDay(v)) {
+    const focus = focusOf(v, day);
+    html += `<tr class="group"><td colspan="5">${esc(day)}${focus ? ` <span class="muted">· ${esc(focus)}</span>` : ""}</td></tr>`;
+    for (const p of slots) {
+      const lib = libOf(v, p.exercise);
+      const options = v.library.filter((l) => l.pattern === p.pattern || l.name === p.exercise)
+        .map((l) => `<option value="${esc(l.name)}" ${l.name === p.exercise ? "selected" : ""}>${esc(l.name)}${kitOn(v, l.equipment) ? "" : " (kit off)"}</option>`).join("");
+      const note = !p.enabled ? "" : p.stand_in ? `<div class="small muted">Kit off: using ${esc(p.uses)}</div>` : !p.uses ? '<div class="small muted">No kit for this pattern: skipped</div>' : "";
+      const setsOpts = [`<option value="">${lib ? lib.sets : "—"} (library)</option>`, ...[1, 2, 3, 4, 5, 6].map((n) => `<option value="${n}" ${p.sets === n ? "selected" : ""}>${n}</option>`)].join("");
+      html += `<tr><td class="muted small">${esc(p.pattern)}</td>
+        <td><select class="slot-swap" data-row="${p.row}" data-from="${esc(p.exercise)}" aria-label="Exercise for ${esc(p.pattern)} on ${esc(day)}" ${dis}>${options}</select>${note}</td>
+        <td><select class="slot-sets" data-row="${p.row}" data-ex="${esc(p.exercise)}" aria-label="Sets" ${dis}>${setsOpts}</select></td>
+        <td>${toggle(`data-slot-row="${p.row}" data-name="${esc(p.exercise)}"`, p.enabled, `${p.exercise} on ${day}`)}</td>
+        <td><button class="icon-btn slot-remove" data-row="${p.row}" data-ex="${esc(p.exercise)}" title="Remove from ${esc(day)}" aria-label="Remove ${esc(p.exercise)} from ${esc(day)}" ${dis}>×</button></td></tr>`;
+    }
+    // Add list: exercises that suit this day first, labelled with the days they fit.
+    const onDay = new Set(slots.map((p) => p.exercise));
+    const opt = (l) => `<option value="${esc(l.name)}">${esc(l.name)} · ${esc(l.pattern)}${kitOn(v, l.equipment) ? "" : " (kit off)"}${l.fits.includes(focus) ? "" : ` · ${esc(fitsDays(v, l))}`}</option>`;
+    const free = v.library.filter((l) => !onDay.has(l.name));
+    const fit = free.filter((l) => l.fits.includes(focus)), other = free.filter((l) => !l.fits.includes(focus));
+    html += `<tr><td colspan="5"><select class="slot-add" data-day="${esc(day)}" aria-label="Add an exercise to ${esc(day)}" ${dis}>
+      <option value="">Add an exercise…</option>
+      ${fit.length ? `<optgroup label="Suits ${esc(focus || day)}">${fit.map(opt).join("")}</optgroup>` : ""}
+      ${other.length ? `<optgroup label="Other days">${other.map(opt).join("")}</optgroup>` : ""}</select></td></tr>`;
   }
   return html;
-}
-
-function exerciseRow(p, kitOn) {
-  const note = !p.enabled ? "" : kitOn(p.equipment) ? ""
-    : p.alt_exercise && kitOn(p.alt_equipment) ? ` <span class="small muted">(kit off, using ${esc(p.alt_exercise)})</span>`
-    : ' <span class="small muted">(kit off, dropped)</span>';
-  return `<tr><td class="${p.enabled ? "" : "off"}">${esc(p.exercise)}${note}</td><td>${esc(p.equipment)}</td>
-    <td>${toggle(`data-ex-row="${p.row}" data-name="${esc(p.exercise)}"`, p.enabled, `${p.exercise} on`)}</td></tr>`;
 }
 
 /** Write a switch to the sheet; on failure put it back and say why. */
@@ -738,15 +810,15 @@ function renderSettings(el) {
       </tbody></table></div>
       <p class="small muted" style="margin:0">Change these in the sheet. The app reads them on every sync.</p></div>
     <div class="panel"><h3>Equipment</h3>
-      <p class="small muted" style="margin:0">Switch kit off when you can't get to it. Every exercise that needs it moves to its alternative, or drops out of its session if it hasn't got one.${canSwitch ? "" : " Connect to the Google Sheet to change these."}</p>
+      <p class="small muted" style="margin:0">Switch kit off when you can't get to it. Each slot that needs it uses the next exercise in its movement pattern whose kit is on, or drops out if there isn't one. Switching kit on makes its exercises available everywhere they fit.${canSwitch ? "" : " Connect to the Google Sheet to change these."}</p>
       <div class="table-wrap"><table><thead><tr><th>Kit</th><th>Load type</th><th>On</th></tr></thead><tbody>
         ${set.equipment.map((e) => `<tr><td>${esc(e.name)}</td><td>${esc(e.load_type)}</td>
           <td>${toggle(`data-equip-row="${e.row}" data-name="${esc(e.name)}"`, e.enabled, `${e.name} on`)}</td></tr>`).join("")}
       </tbody></table></div></div>
-    <div class="panel"><h3>Exercises</h3>
-      <p class="small muted" style="margin:0">Switch an exercise off to drop it from its session. Its history is kept, and switching it back on picks up where you left off. To put an exercise on another day, pick it from that day's "Add an exercise…" list: it's copied with its sets, reps, kit and video, and you can tweak it in the sheet.</p>
-      <div class="table-wrap"><table><thead><tr><th>Exercise</th><th>Equipment</th><th>On</th></tr></thead><tbody>
-        ${exerciseRows(v)}
+    <div class="panel"><h3>Plan</h3>
+      <p class="small muted" style="margin:0">Each day is a list of slots. Pick a different exercise for a slot from the same movement pattern, change its sets, switch it off, or remove it. "Add an exercise…" lists what suits that day first; the others show which days they suit. If an exercise's kit is off, the slot uses the next exercise in its pattern with kit on. Everything is saved to the sheet's 📅 Plan.</p>
+      <div class="table-wrap"><table class="plan-edit"><thead><tr><th>Slot</th><th>Exercise</th><th>Sets</th><th>On</th><th></th></tr></thead><tbody>
+        ${planEditor(v)}
       </tbody></table></div></div>` : ""}
     <div class="panel"><h3>Updates</h3>
       <p class="muted" style="margin:0">${S.update?.current ? `Version ${esc(S.update.current)}` : "Version unknown"}${
@@ -758,21 +830,18 @@ function renderSettings(el) {
 
   $$("input[data-equip-row]", el).forEach((b) => b.addEventListener("change", () =>
     flip(b, "set_equipment", { row: +b.dataset.equipRow, name: b.dataset.name, enabled: b.checked })));
-  $$("select.add-exercise", el).forEach((sel) => sel.addEventListener("change", async () => {
-    const exercise = sel.value, workout = sel.dataset.day;
-    if (!exercise) return;
-    setBusy(true);
-    try {
-      S.view = await invoke("add_exercise", { workout, exercise });
-      toast(`${exercise} added to ${workout}.`);
-    } catch (e) {
-      toast(String(e), 6000);
-    }
-    setBusy(false);
-    render();
+  $$("select.slot-add", el).forEach((sel) => sel.addEventListener("change", () => {
+    if (sel.value) planCall("add_slot", { day: sel.dataset.day, exercise: sel.value }, `${sel.value} added to ${sel.dataset.day}.`);
   }));
-  $$("input[data-ex-row]", el).forEach((b) => b.addEventListener("change", () =>
-    flip(b, "set_exercise", { row: +b.dataset.exRow, exercise: b.dataset.name, enabled: b.checked })));
+  $$("select.slot-swap", el).forEach((sel) => sel.addEventListener("change", () =>
+    planCall("swap_slot", { row: +sel.dataset.row, from: sel.dataset.from, to: sel.value }, `${sel.dataset.from} swapped for ${sel.value}.`)));
+  $$("select.slot-sets", el).forEach((sel) => sel.addEventListener("change", () =>
+    planCall("set_slot_sets", { row: +sel.dataset.row, exercise: sel.dataset.ex, sets: sel.value ? Number(sel.value) : null }, `${sel.dataset.ex}: ${sel.value || "library"} sets.`)));
+  $$("button.slot-remove", el).forEach((b) => b.addEventListener("click", () => {
+    if (confirm(`Remove ${b.dataset.ex} from this day? Its history is kept.`)) planCall("remove_slot", { row: +b.dataset.row, exercise: b.dataset.ex }, `${b.dataset.ex} removed.`);
+  }));
+  $$("input[data-slot-row]", el).forEach((b) => b.addEventListener("change", () =>
+    flip(b, "set_slot", { row: +b.dataset.slotRow, exercise: b.dataset.name, enabled: b.checked })));
 
   const showMode = () => {
     const mode = $('input[name="mode"]:checked', el).value;

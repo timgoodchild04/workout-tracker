@@ -7,11 +7,12 @@ pub mod paths;
 pub mod plan;
 pub mod sheets;
 pub mod snapshot;
+pub mod suggest;
 
 use chrono::{Local, NaiveDate};
 use coach::{Analysis, Card, ProgressRow, Today, Verdict};
 use engine::Engine;
-use model::{Data, LogEntry, ProgRow, Settings};
+use model::{Data, DayInfo, LibEx, LogEntry, Settings};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -123,8 +124,42 @@ pub struct View {
     sessions: Vec<SessionView>,
     history: Vec<HistRow>,
     progress: Vec<ProgressRow>,
-    programme: Vec<ProgRow>,
+    /// 📚 Exercises, in sheet order.
+    library: Vec<LibEx>,
+    /// 📅 Plan slots with what each one uses today.
+    plan: Vec<SlotView>,
+    days: Vec<DayInfo>,
+    suggestions: Vec<suggest::Suggestion>,
+    volume: Vec<suggest::VolumeRow>,
     settings: Option<Settings>,
+}
+
+#[derive(Serialize)]
+pub struct SlotView {
+    #[serde(flatten)]
+    slot: model::Slot,
+    /// What it uses today ("" = switched off or nothing available).
+    uses: String,
+    /// Uses a stand-in because the slot's own kit is off.
+    stand_in: bool,
+}
+
+/// The view the UI would get for `data`, connected and with nothing queued, as JSON.
+/// Only for rendering the UI headlessly in tests (no window, no sheet).
+#[doc(hidden)]
+pub fn preview_view_json(data: Data) -> String {
+    let inner = Inner {
+        dir: std::env::temp_dir(),
+        view_date: None,
+        config: Config::default(),
+        data: Some(data),
+        pending: vec![],
+        online: true,
+        message: String::new(),
+        last_sync: Some("12:00".into()),
+        account: String::new(),
+    };
+    serde_json::to_string(&build_view(&inner)).unwrap()
 }
 
 fn build_view(s: &Inner) -> View {
@@ -149,7 +184,11 @@ fn build_view(s: &Inner) -> View {
         sessions: vec![],
         history: vec![],
         progress: vec![],
-        programme: vec![],
+        library: vec![],
+        plan: vec![],
+        days: vec![],
+        suggestions: vec![],
+        volume: vec![],
         settings: None,
     };
     let Some(base) = &s.data else { return view };
@@ -179,7 +218,7 @@ fn build_view(s: &Inner) -> View {
         .map(|name| {
             let (cards, skipped) = coach::session_cards(&data, &engine, &analysis, &name, date);
             let (programme_plan, best_plan) = plan::plans_remaining(&cards, &engine, &start);
-            let switched_off = data.programme.iter().filter(|p| p.workout == name && !p.enabled).map(|p| p.exercise.clone()).collect();
+            let switched_off = data.plan.iter().filter(|p| p.day == name && !p.enabled).map(|p| p.exercise.clone()).collect();
             SessionView { name, cards, skipped, switched_off, programme_plan, best_plan }
         })
         .collect();
@@ -203,7 +242,18 @@ fn build_view(s: &Inner) -> View {
         })
         .collect();
     view.progress = coach::progress(&data, &engine, &analysis);
-    view.programme = data.programme.clone();
+    view.library = data.library.clone();
+    view.plan = data
+        .plan
+        .iter()
+        .map(|slot| {
+            let uses = coach::resolve(&data, &engine, slot).map(|l| l.name.clone()).unwrap_or_default();
+            SlotView { stand_in: !uses.is_empty() && uses != slot.exercise, uses, slot: slot.clone() }
+        })
+        .collect();
+    view.days = data.days.clone();
+    view.suggestions = suggest::suggestions(&data, &engine, &analysis, today);
+    view.volume = suggest::volume(&data, &engine, today);
     view.settings = Some(data.settings.clone());
     view
 }
@@ -426,31 +476,6 @@ mod tests {
         }
     }
 
-    fn prog(workout: &str, ex: &str, eq: &str, alt: &str, alt_eq: &str, row: usize) -> ProgRow {
-        ProgRow {
-            workout: workout.into(), exercise: ex.into(), sets: 3, rep_low: 8.0, rep_high: 12.0, start_weight: 15.0,
-            equipment: eq.into(), video: format!("https://v/{ex}"), alt_exercise: alt.into(), alt_equipment: alt_eq.into(),
-            alt_start_weight: 10.0, alt_video: if alt.is_empty() { String::new() } else { format!("https://v/{alt}") }, enabled: true, row,
-        }
-    }
-
-    #[test]
-    fn adding_an_exercise_copies_its_definition() {
-        let p = vec![prog("Pull", "Barbell Row", "EZ Barbell", "Dumbbell Row", "Dumbbell", 9), prog("Upper", "Pallof Press", "Resistance Band", "", "", 21)];
-        // Its own row, moved to another day.
-        let r = programme_row_for(&p, "Morning", "Pallof Press").unwrap();
-        assert_eq!(r[0], "Morning");
-        assert_eq!(r[1], "Pallof Press");
-        assert_eq!(r[6], "Resistance Band");
-        assert_eq!(r[7], r#"=HYPERLINK("https://v/Pallof Press","▶ Pallof Press")"#);
-        assert_eq!(r[8], "");
-        // An alternative becomes its own exercise: parent's sets/reps, alternative's kit, weight and video.
-        let r = programme_row_for(&p, "Legs", "Dumbbell Row").unwrap();
-        assert_eq!((r[1].as_str(), r[2].as_u64(), r[5].as_f64(), r[6].as_str()), (Some("Dumbbell Row"), Some(3), Some(10.0), Some("Dumbbell")));
-        assert_eq!(r[8], "");
-        assert!(programme_row_for(&p, "Legs", "Unknown").is_none());
-    }
-
     #[test]
     fn editing_a_queued_entry_replaces_it() {
         let mut q = vec![];
@@ -519,48 +544,71 @@ async fn set_switch(state: &AppState, tab: &str, row: usize, name_col: &str, exp
     Ok(build_view(&state.0.lock().unwrap()))
 }
 
-/// The 💪 Workouts row (A:L) for `exercise` on `workout`, copied from wherever it's defined:
-/// its own row on another day, or as the alternative on some row (then it gets that row's
-/// sets and reps, the alternative's kit, start weight and video, and no alternative itself).
-fn programme_row_for(programme: &[ProgRow], workout: &str, exercise: &str) -> Option<Vec<serde_json::Value>> {
-    use serde_json::json;
-    let link = |url: &str, label: &str| if url.is_empty() { json!("") } else { json!(format!("=HYPERLINK(\"{url}\",\"▶ {label}\")")) };
-    if let Some(p) = programme.iter().find(|p| p.exercise == exercise) {
-        let alt_start = if p.alt_exercise.is_empty() { json!("") } else { json!(p.alt_start_weight) };
-        return Some(vec![
-            json!(workout), json!(p.exercise), json!(p.sets), json!(p.rep_low), json!(p.rep_high), json!(p.start_weight),
-            json!(p.equipment), link(&p.video, &p.exercise),
-            json!(p.alt_exercise), json!(p.alt_equipment), alt_start, link(&p.alt_video, &p.alt_exercise),
-        ]);
+/// Add a slot for `exercise` to `day`, using its library pattern, in the first empty
+/// 📅 Plan row.
+#[tauri::command]
+async fn add_slot(state: State<'_, AppState>, day: String, exercise: String) -> Result<View, String> {
+    let (config, data) = {
+        let s = state.0.lock().unwrap();
+        (s.config.clone(), s.data.clone().ok_or("Not synced yet.")?)
+    };
+    let lib = data.lib(&exercise).ok_or_else(|| format!("{exercise} isn't in 📚 Exercises."))?;
+    if data.plan.iter().any(|s| s.day == day && s.exercise == exercise) {
+        return Err(format!("{exercise} is already on {day}."));
     }
-    let p = programme.iter().find(|p| p.alt_exercise == exercise)?;
-    Some(vec![
-        json!(workout), json!(p.alt_exercise), json!(p.sets), json!(p.rep_low), json!(p.rep_high), json!(p.alt_start_weight),
-        json!(p.alt_equipment), link(&p.alt_video, &p.alt_exercise),
-        json!(""), json!(""), json!(""), json!(""),
-    ])
+    let used: std::collections::HashSet<usize> = data.plan.iter().map(|p| p.row).collect();
+    let row = (model::PLAN_FIRST_ROW..=model::PLAN_LAST_ROW)
+        .find(|r| !used.contains(r))
+        .ok_or("📅 Plan is full (rows 5-104). Remove an unused slot first.")?;
+    let Source::Sheets(client) = source(&config)? else {
+        return Err("Snapshot mode is read-only. Connect to the Google Sheet to change the plan.".into());
+    };
+    let values = vec![serde_json::json!(day), serde_json::json!(lib.pattern), serde_json::json!(exercise), serde_json::json!(""), serde_json::json!("Yes")];
+    client.write_plan_row(row, values).await.map_err(|e| format!("{e:#}"))?;
+    sync(&state).await;
+    Ok(build_view(&state.0.lock().unwrap()))
 }
 
-/// Add an exercise that's defined elsewhere in the programme to `workout` (a day),
-/// in the first empty 💪 Workouts row.
+/// Put a different exercise in a slot (📅 Plan column C).
 #[tauri::command]
-async fn add_exercise(state: State<'_, AppState>, workout: String, exercise: String) -> Result<View, String> {
-    let (config, programme) = {
+async fn swap_slot(state: State<'_, AppState>, row: usize, from: String, to: String) -> Result<View, String> {
+    let (config, known) = {
         let s = state.0.lock().unwrap();
-        (s.config.clone(), s.data.as_ref().map(|d| d.programme.clone()).unwrap_or_default())
+        (s.config.clone(), s.data.as_ref().is_some_and(|d| d.lib(&to).is_some()))
     };
-    if programme.iter().any(|p| p.workout == workout && (p.exercise == exercise || p.alt_exercise == exercise)) {
-        return Err(format!("{exercise} is already on {workout}."));
+    if !known {
+        return Err(format!("{to} isn't in 📚 Exercises."));
     }
-    let values = programme_row_for(&programme, &workout, &exercise).ok_or_else(|| format!("{exercise} isn't defined anywhere in the programme."))?;
-    let used: std::collections::HashSet<usize> = programme.iter().map(|p| p.row).collect();
-    let row = (model::WORKOUTS_FIRST_ROW..=model::WORKOUTS_LAST_ROW)
-        .find(|r| !used.contains(r))
-        .ok_or("💪 Workouts is full (its formulas stop at row 61). Delete an unused exercise row in the sheet first.")?;
     let Source::Sheets(client) = source(&config)? else {
-        return Err("Snapshot mode is read-only. Connect to the Google Sheet to add exercises.".into());
+        return Err("Snapshot mode is read-only. Connect to the Google Sheet to change the plan.".into());
     };
-    client.write_programme_row(row, values, "Yes").await.map_err(|e| format!("{e:#}"))?;
+    client.set_cell(model::TAB_PLAN, &format!("C{row}"), &from, &format!("C{row}"), &to).await.map_err(|e| format!("{e:#}"))?;
+    sync(&state).await;
+    Ok(build_view(&state.0.lock().unwrap()))
+}
+
+/// Set a slot's sets (📅 Plan column D; None = back to the library's).
+#[tauri::command]
+async fn set_slot_sets(state: State<'_, AppState>, row: usize, exercise: String, sets: Option<u32>) -> Result<View, String> {
+    let config = state.0.lock().unwrap().config.clone();
+    let Source::Sheets(client) = source(&config)? else {
+        return Err("Snapshot mode is read-only. Connect to the Google Sheet to change the plan.".into());
+    };
+    let value = sets.map(|n| n.to_string()).unwrap_or_default();
+    client.set_cell(model::TAB_PLAN, &format!("C{row}"), &exercise, &format!("D{row}"), &value).await.map_err(|e| format!("{e:#}"))?;
+    sync(&state).await;
+    Ok(build_view(&state.0.lock().unwrap()))
+}
+
+/// Remove a slot: clear its 📅 Plan row (A:E).
+#[tauri::command]
+async fn remove_slot(state: State<'_, AppState>, row: usize, exercise: String) -> Result<View, String> {
+    let config = state.0.lock().unwrap().config.clone();
+    let Source::Sheets(client) = source(&config)? else {
+        return Err("Snapshot mode is read-only. Connect to the Google Sheet to change the plan.".into());
+    };
+    let blank = vec![serde_json::json!(""); 5];
+    client.set_cells(model::TAB_PLAN, &format!("C{row}"), &exercise, &format!("A{row}:E{row}"), blank).await.map_err(|e| format!("{e:#}"))?;
     sync(&state).await;
     Ok(build_view(&state.0.lock().unwrap()))
 }
@@ -571,10 +619,10 @@ async fn set_equipment(state: State<'_, AppState>, row: usize, name: String, ena
     set_switch(&state, model::TAB_SETTINGS, row, "A", &name, model::COL_EQUIPMENT_ON, enabled).await
 }
 
-/// Switch an exercise on or off (💪 Workouts, Exercise on? column).
+/// Switch a plan slot on or off (📅 Plan, On? column).
 #[tauri::command]
-async fn set_exercise(state: State<'_, AppState>, row: usize, exercise: String, enabled: bool) -> Result<View, String> {
-    set_switch(&state, model::TAB_WORKOUTS, row, "B", &exercise, model::COL_EXERCISE_ON, enabled).await
+async fn set_slot(state: State<'_, AppState>, row: usize, exercise: String, enabled: bool) -> Result<View, String> {
+    set_switch(&state, model::TAB_PLAN, row, "C", &exercise, "E", enabled).await
 }
 
 #[derive(Serialize)]
@@ -691,7 +739,7 @@ pub fn run() {
             }), tauri::async_runtime::Mutex::new(())));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![load, save_entry, discard_pending, save_config, data_dir, check_update, install_update, set_equipment, set_exercise, add_exercise, import_file, platform_info])
+        .invoke_handler(tauri::generate_handler![load, save_entry, discard_pending, save_config, data_dir, check_update, install_update, set_equipment, set_slot, add_slot, swap_slot, set_slot_sets, remove_slot, import_file, platform_info])
         .run(tauri::generate_context!())
         .expect("error while running the app");
 }

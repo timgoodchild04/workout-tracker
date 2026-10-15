@@ -5,18 +5,22 @@
 use chrono::{Duration, NaiveDate};
 use serde::{Deserialize, Serialize};
 
-pub const TAB_WORKOUTS: &str = "💪 Workouts";
+pub const TAB_LIBRARY: &str = "📚 Exercises";
+pub const TAB_PLAN: &str = "📅 Plan";
 pub const TAB_SETTINGS: &str = "⚙️ Settings";
 pub const TAB_SCHEDULE: &str = "Schedule";
 pub const TAB_LOG: &str = "📝 Workout Log";
 
 /// Ranges the app reads. Rows/columns match the sheet's own named ranges.
-pub const RANGE_WORKOUTS: &str = "A5:U61";
-pub const WORKOUTS_FIRST_ROW: usize = 5;
-/// Last 💪 Workouts row the sheet's formulas and lookups cover (A5:A61).
-pub const WORKOUTS_LAST_ROW: usize = 61;
-/// 💪 Workouts column the app writes Yes/No into to switch an exercise on or off.
-pub const COL_EXERCISE_ON: &str = "U";
+/// 📚 Exercises: one exercise per row (A:N), from row 5.
+pub const RANGE_LIBRARY: &str = "A5:N204";
+pub const LIBRARY_FIRST_ROW: usize = 5;
+/// 📅 Plan: slots in A:E (rows 5-104), the Days table in R:S and weekly set
+/// targets in U:V, all from row 5. Read as one block.
+pub const RANGE_PLAN: &str = "A5:V104";
+pub const PLAN_FIRST_ROW: usize = 5;
+/// Last 📅 Plan row the sheet's helper formulas and the Dashboard cover.
+pub const PLAN_LAST_ROW: usize = 104;
 /// ⚙️ Settings column holding each piece of equipment's Enabled? Yes/No.
 pub const COL_EQUIPMENT_ON: &str = "B";
 pub const RANGE_SETTINGS: &str = "A1:D100";
@@ -113,30 +117,59 @@ fn default_isolation_low() -> f64 {
     10.0
 }
 
+/// One exercise in 📚 Exercises.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProgRow {
-    pub workout: String,
-    pub exercise: String,
+pub struct LibEx {
+    pub row: usize,
+    pub name: String,
+    /// Movement pattern; exercises with the same pattern can stand in for each other.
+    pub pattern: String,
+    pub primary: String,
+    /// Secondary muscles (count half towards weekly volume).
+    pub secondary: Vec<String>,
+    pub equipment: String,
     pub sets: u32,
     pub rep_low: f64,
     pub rep_high: f64,
     pub start_weight: f64,
-    pub equipment: String,
     pub video: String,
-    pub alt_exercise: String,
-    pub alt_equipment: String,
-    pub alt_start_weight: f64,
-    pub alt_video: String,
-    /// 💪 Workouts column U ("Exercise on?"); blank counts as on.
-    #[serde(default = "on")]
-    pub enabled: bool,
-    /// Sheet row on 💪 Workouts.
-    #[serde(default)]
-    pub row: usize,
+    pub easier: String,
+    pub harder: String,
+    /// Day focuses it suits (Push, Pull, Legs, Upper, Morning): the hint when picking.
+    pub fits: Vec<String>,
+    pub notes: String,
 }
 
-fn on() -> bool {
-    true
+/// One slot of a day in 📅 Plan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Slot {
+    pub row: usize,
+    pub day: String,
+    pub pattern: String,
+    /// The exercise you'd like for this slot.
+    pub exercise: String,
+    /// Sets override; None = the library's.
+    pub sets: Option<u32>,
+    /// "On?" (blank counts as on).
+    pub enabled: bool,
+}
+
+/// A day and its focus (📅 Plan's Days table).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DayInfo {
+    pub name: String,
+    pub focus: String,
+}
+
+/// Weekly working-set target for a muscle (📅 Plan's targets table).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Target {
+    pub muscle: String,
+    pub sets: f64,
+}
+
+fn split_list(s: &str) -> Vec<String> {
+    s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,9 +200,24 @@ pub struct LogEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Data {
     pub settings: Settings,
-    pub programme: Vec<ProgRow>,
+    pub library: Vec<LibEx>,
+    pub plan: Vec<Slot>,
+    pub days: Vec<DayInfo>,
+    pub targets: Vec<Target>,
     pub schedule: Vec<SchedDay>,
     pub log: Vec<LogEntry>,
+}
+
+impl Data {
+    /// The library entry for an exercise (first match, like the sheet's MATCH).
+    pub fn lib(&self, name: &str) -> Option<&LibEx> {
+        self.library.iter().find(|l| l.name == name)
+    }
+
+    /// A day's focus from the Days table ("" if it isn't listed).
+    pub fn focus(&self, day: &str) -> &str {
+        self.days.iter().find(|d| d.name == day).map(|d| d.focus.as_str()).unwrap_or("")
+    }
 }
 
 /// Google/Excel serial date (days since 1899-12-30).
@@ -210,8 +258,9 @@ fn yes(c: &Cell) -> bool {
 }
 
 impl Data {
-    /// `settings` is A1:D100, `workouts` A5:L61, `schedule` B13:E19, `log` A2:H…
-    pub fn from_grids(workouts: &Grid, settings: &Grid, schedule: &Grid, log: &Grid) -> Data {
+    /// `library` is 📚 Exercises A5:N204, `plan` 📅 Plan A5:V104, `settings` A1:D100,
+    /// `schedule` B13:E19, `log` A2:H…
+    pub fn from_grids(library: &Grid, plan: &Grid, settings: &Grid, schedule: &Grid, log: &Grid) -> Data {
         let s = |r: usize, c: usize| at(settings, r - 1, c); // 1-based sheet rows
         let num = |r: usize, c: usize, d: f64| s(r, c).num().unwrap_or(d);
 
@@ -248,29 +297,56 @@ impl Data {
             ladder,
         };
 
-        let programme = workouts
+        let library = library
             .iter()
             .enumerate()
-            .filter(|(i, _)| !at(workouts, *i, 1).is_empty())
+            .filter(|(i, _)| !at(library, *i, 0).is_empty())
             .map(|(i, _)| {
-                let c = |col: usize| at(workouts, i, col);
-                ProgRow {
-                    workout: c(0).text(),
-                    exercise: c(1).text(),
-                    sets: c(2).num().unwrap_or(3.0) as u32,
-                    rep_low: c(3).num().unwrap_or(0.0),
-                    rep_high: c(4).num().unwrap_or(0.0),
-                    start_weight: c(5).num().unwrap_or(0.0),
-                    equipment: c(6).text(),
-                    video: extract_url(c(7)),
-                    alt_exercise: c(8).text(),
-                    alt_equipment: c(9).text(),
-                    alt_start_weight: c(10).num().unwrap_or(0.0),
-                    alt_video: extract_url(c(11)),
-                    enabled: !c(20).text().eq_ignore_ascii_case("no"),
-                    row: i + WORKOUTS_FIRST_ROW,
+                let c = |col: usize| at(library, i, col);
+                LibEx {
+                    row: i + LIBRARY_FIRST_ROW,
+                    name: c(0).text(),
+                    pattern: c(1).text(),
+                    primary: c(2).text(),
+                    secondary: split_list(&c(3).text()),
+                    equipment: c(4).text(),
+                    sets: c(5).num().unwrap_or(3.0) as u32,
+                    rep_low: c(6).num().unwrap_or(0.0),
+                    rep_high: c(7).num().unwrap_or(0.0),
+                    start_weight: c(8).num().unwrap_or(0.0),
+                    video: extract_url(c(9)),
+                    easier: c(10).text(),
+                    harder: c(11).text(),
+                    fits: split_list(&c(12).text()),
+                    notes: c(13).text(),
                 }
             })
+            .collect();
+
+        let slots = plan
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !at(plan, *i, 0).is_empty() && !at(plan, *i, 2).is_empty())
+            .map(|(i, _)| {
+                let c = |col: usize| at(plan, i, col);
+                Slot {
+                    row: i + PLAN_FIRST_ROW,
+                    day: c(0).text(),
+                    pattern: c(1).text(),
+                    exercise: c(2).text(),
+                    sets: c(3).num().map(|n| n as u32),
+                    enabled: !c(4).text().eq_ignore_ascii_case("no"),
+                }
+            })
+            .collect();
+        // Days table R:S (cols 17-18) and targets U:V (cols 20-21) share the block's rows.
+        let days = (0..plan.len())
+            .filter(|&i| !at(plan, i, 17).is_empty())
+            .map(|i| DayInfo { name: at(plan, i, 17).text(), focus: at(plan, i, 18).text() })
+            .collect();
+        let targets = (0..plan.len())
+            .filter(|&i| !at(plan, i, 20).is_empty())
+            .map(|i| Target { muscle: at(plan, i, 20).text(), sets: at(plan, i, 21).num().unwrap_or(0.0) })
             .collect();
 
         let schedule = (0..7)
@@ -302,6 +378,6 @@ impl Data {
             })
             .collect();
 
-        Data { settings, programme, schedule, log }
+        Data { settings, library, plan: slots, days, targets, schedule, log }
     }
 }

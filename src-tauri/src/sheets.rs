@@ -131,21 +131,27 @@ impl Client {
     }
 
     pub async fn fetch(&self) -> Result<Data> {
-        // Workouts as FORMULA so the =HYPERLINK(...) video URLs come through.
-        let w = self.batch_get(&[q(TAB_WORKOUTS, RANGE_WORKOUTS)], "FORMULA").await?;
-        let rest = self
-            .batch_get(&[q(TAB_SETTINGS, RANGE_SETTINGS), q(TAB_SCHEDULE, RANGE_SCHEDULE), q(TAB_LOG, RANGE_LOG)], "UNFORMATTED_VALUE")
+        let g = self
+            .batch_get(
+                &[q(TAB_LIBRARY, RANGE_LIBRARY), q(TAB_PLAN, RANGE_PLAN), q(TAB_SETTINGS, RANGE_SETTINGS), q(TAB_SCHEDULE, RANGE_SCHEDULE), q(TAB_LOG, RANGE_LOG)],
+                "UNFORMATTED_VALUE",
+            )
             .await?;
-        if w.is_empty() || rest.len() < 3 {
+        if g.len() < 5 {
             bail!("the sheet didn't return the expected tabs");
         }
-        Ok(Data::from_grids(&w[0], &rest[0], &rest[1], &rest[2]))
+        Ok(Data::from_grids(&g[0], &g[1], &g[2], &g[3], &g[4]))
     }
 
     /// Set one cell to `value`, but only if `check_a1` (same tab) still reads `expect`.
     /// Rows are addressed by number from the last sync, so this stops a write landing
     /// on the wrong row if the sheet was rearranged since.
     pub async fn set_cell(&self, tab: &str, check_a1: &str, expect: &str, a1: &str, value: &str) -> Result<()> {
+        self.set_cells(tab, check_a1, expect, a1, vec![json!(value)]).await
+    }
+
+    /// `set_cell` for a run of cells in one row (`a1` like "A7:E7").
+    pub async fn set_cells(&self, tab: &str, check_a1: &str, expect: &str, a1: &str, values: Vec<Value>) -> Result<()> {
         let got = self.batch_get(&[q(tab, check_a1)], "UNFORMATTED_VALUE").await?;
         let got = got.first().and_then(|g| g.first()).and_then(|r| r.first()).map(|c| c.text()).unwrap_or_default();
         if got != expect {
@@ -157,33 +163,27 @@ impl Client {
             .put(format!("{API}/{}/values/{}", self.sheet_id, urlencoding::encode(&range)))
             .bearer_auth(self.token().await?)
             .query(&[("valueInputOption", "USER_ENTERED")])
-            .json(&json!({ "range": range, "majorDimension": "ROWS", "values": [[value]] }))
+            .json(&json!({ "range": range, "majorDimension": "ROWS", "values": [values] }))
             .send()
             .await?;
         Self::check(res).await?;
         Ok(())
     }
 
-    /// Fill an empty 💪 Workouts row: A:L (the exercise) and U (Exercise on?). The row is
-    /// re-read first and must still be empty, so nothing typed into the sheet since the
-    /// last sync gets overwritten.
-    pub async fn write_programme_row(&self, row: usize, a_to_l: Vec<Value>, on: &str) -> Result<()> {
-        let got = self.batch_get(&[q(TAB_WORKOUTS, &format!("A{row}:B{row}"))], "UNFORMATTED_VALUE").await?;
+    /// Fill an empty 📅 Plan row (A:E). The row is re-read first and must still be
+    /// empty, so nothing typed into the sheet since the last sync gets overwritten.
+    pub async fn write_plan_row(&self, row: usize, values: Vec<Value>) -> Result<()> {
+        let got = self.batch_get(&[q(TAB_PLAN, &format!("A{row}:C{row}"))], "UNFORMATTED_VALUE").await?;
         if got.first().and_then(|g| g.first()).is_some_and(|r| r.iter().any(|c| !c.is_empty())) {
-            bail!("row {row} of 💪 Workouts isn't empty any more. Sync and try again.");
+            bail!("row {row} of 📅 Plan isn't empty any more. Sync and try again.");
         }
-        let body = json!({
-            "valueInputOption": "USER_ENTERED",
-            "data": [
-                { "range": q(TAB_WORKOUTS, &format!("A{row}:L{row}")), "values": [a_to_l] },
-                { "range": q(TAB_WORKOUTS, &format!("{COL_EXERCISE_ON}{row}")), "values": [[on]] },
-            ],
-        });
+        let range = q(TAB_PLAN, &format!("A{row}:E{row}"));
         let res = self
             .http
-            .post(format!("{API}/{}/values:batchUpdate", self.sheet_id))
+            .put(format!("{API}/{}/values/{}", self.sheet_id, urlencoding::encode(&range)))
             .bearer_auth(self.token().await?)
-            .json(&body)
+            .query(&[("valueInputOption", "USER_ENTERED")])
+            .json(&json!({ "range": range, "majorDimension": "ROWS", "values": [values] }))
             .send()
             .await?;
         Self::check(res).await?;
