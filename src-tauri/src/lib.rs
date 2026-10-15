@@ -46,7 +46,9 @@ struct Inner {
     account: String,
 }
 
-pub struct AppState(Mutex<Inner>);
+/// App state, plus a lock held for a whole sync so two syncs (an auto-save and a
+/// window-focus refresh, say) can never send the same queued entry twice.
+pub struct AppState(Mutex<Inner>, tauri::async_runtime::Mutex<()>);
 
 fn read_json<T: for<'a> Deserialize<'a>>(p: &PathBuf) -> Option<T> {
     std::fs::read_to_string(p).ok().and_then(|s| serde_json::from_str(&s).ok())
@@ -151,7 +153,14 @@ fn build_view(s: &Inner) -> View {
     };
     let Some(base) = &s.data else { return view };
     let mut data = base.clone();
-    data.log.extend(s.pending.iter().cloned());
+    // Queued entries: edits replace their row's entry, new ones go on the end.
+    for p in &s.pending {
+        let q = LogEntry { queued: true, ..p.clone() };
+        match p.row.and_then(|r| data.log.iter().position(|e| e.row == Some(r))) {
+            Some(i) => data.log[i] = q,
+            None => data.log.push(q),
+        }
+    }
     let engine = Engine::new(&data.settings);
     let analysis: Vec<Analysis> = coach::analyse(&data, &engine);
 
@@ -189,7 +198,7 @@ fn build_view(s: &Inner) -> View {
             decision: a.decision.clone(),
             verdict: a.verdict,
             bodyweight: a.load_type == engine::BODYWEIGHT,
-            pending: e.row.is_none(),
+            pending: e.queued || e.row.is_none(),
         })
         .collect();
     view.progress = coach::progress(&data, &engine, &analysis);
@@ -224,6 +233,7 @@ fn source(c: &Config) -> Result<Source, String> {
 }
 
 async fn sync(state: &AppState) {
+    let _one_at_a_time = state.1.lock().await;
     let config = state.0.lock().unwrap().config.clone();
     let src = match source(&config) {
         Ok(s) => s,
@@ -249,19 +259,7 @@ async fn sync(state: &AppState) {
             }
         }
         Source::Sheets(client) => {
-            let pending = state.0.lock().unwrap().pending.clone();
-            let mut msg = String::new();
-            if !pending.is_empty() {
-                match client.append(&pending).await {
-                    Ok(row) => {
-                        let mut s = state.0.lock().unwrap();
-                        s.pending.clear();
-                        s.save_pending();
-                        msg = format!("Saved {} exercise(s) to the sheet from row {row}.", pending.len());
-                    }
-                    Err(e) => msg = format!("Couldn't save queued entries: {e}"),
-                }
-            }
+            let msg = send_pending(state, &client).await;
             let fetched = client.fetch().await;
             let mut s = state.0.lock().unwrap();
             s.account = client.account_email().to_string();
@@ -294,6 +292,69 @@ async fn load(state: State<'_, AppState>, refresh: bool, date: Option<String>) -
     Ok(build_view(&state.0.lock().unwrap()))
 }
 
+/// Queue one exercise. Already queued for that date? Replace it, keeping the row
+/// it targets. Otherwise add it (row Some = edit that row, None = new row).
+fn enqueue(pending: &mut Vec<LogEntry>, e: LogEntry) {
+    match pending.iter_mut().find(|p| p.date == e.date && p.exercise == e.exercise) {
+        Some(p) => {
+            let row = p.row.or(e.row);
+            *p = LogEntry { row, ..e };
+        }
+        None => pending.push(e),
+    }
+}
+
+/// After a send: drop exactly what was sent. Anything changed meanwhile stays,
+/// and a new entry that has just been appended turns into an edit of its new row.
+fn settle(pending: &mut Vec<LogEntry>, sent: &[LogEntry], new_rows: &[(NaiveDate, String, usize)]) {
+    for done in sent {
+        if let Some(i) = pending.iter().position(|p| p == done) {
+            pending.remove(i);
+        }
+    }
+    for p in pending.iter_mut().filter(|p| p.row.is_none()) {
+        if let Some((_, _, row)) = new_rows.iter().find(|(d, ex, _)| *d == p.date && *ex == p.exercise) {
+            p.row = Some(*row);
+        }
+    }
+}
+
+/// Send the local queue: edits update their own rows, new entries are appended.
+/// Only what was actually sent leaves the queue, so an edit made while this was
+/// in flight survives, retargeted at the row its entry just got. Returns a
+/// message for the status bar ("" when everything went).
+async fn send_pending(state: &AppState, client: &sheets::Client) -> String {
+    let pending = state.0.lock().unwrap().pending.clone();
+    if pending.is_empty() {
+        return String::new();
+    }
+    let mut sent: Vec<LogEntry> = Vec::new();
+    let mut new_rows: Vec<(NaiveDate, String, usize)> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    for e in pending.iter().filter(|e| e.row.is_some()) {
+        match client.update_row(e).await {
+            Ok(()) => sent.push(e.clone()),
+            Err(err) => errors.push(format!("{}: {err:#}", e.exercise)),
+        }
+    }
+    let appends: Vec<LogEntry> = pending.iter().filter(|e| e.row.is_none()).cloned().collect();
+    if !appends.is_empty() {
+        match client.append(&appends).await {
+            Ok(first) => {
+                for (k, e) in appends.into_iter().enumerate() {
+                    new_rows.push((e.date, e.exercise.clone(), first + k));
+                    sent.push(e);
+                }
+            }
+            Err(err) => errors.push(format!("{err:#}")),
+        }
+    }
+    let mut s = state.0.lock().unwrap();
+    settle(&mut s.pending, &sent, &new_rows);
+    s.save_pending();
+    if errors.is_empty() { String::new() } else { format!("Couldn't save to the sheet: {}", errors.join("; ")) }
+}
+
 #[derive(Deserialize)]
 pub struct NewEntry {
     date: String,
@@ -301,23 +362,28 @@ pub struct NewEntry {
     exercise: String,
     weight: f64,
     sets: Vec<Option<f64>>,
+    /// The entry's sheet row when it's already logged (an edit), else None.
+    #[serde(default)]
+    row: Option<usize>,
 }
 
+/// Save one exercise as you go (the Today screen calls this per card). A new
+/// exercise is appended; one already logged has its row updated in place; one
+/// still waiting in the local queue is just replaced there.
 #[tauri::command]
-async fn save_entries(state: State<'_, AppState>, entries: Vec<NewEntry>) -> Result<View, String> {
+async fn save_entry(state: State<'_, AppState>, entry: NewEntry) -> Result<View, String> {
     {
-        let mut s = state.0.lock().unwrap();
-        for e in entries {
-            let date = NaiveDate::parse_from_str(&e.date, "%Y-%m-%d").map_err(|_| format!("bad date {}", e.date))?;
-            let mut sets = [None; 4];
-            for (i, v) in e.sets.into_iter().take(4).enumerate() {
-                sets[i] = v;
-            }
-            if sets.iter().all(|v| v.is_none()) {
-                continue;
-            }
-            s.pending.push(LogEntry { date, workout: e.workout, exercise: e.exercise, weight: e.weight, sets, row: None });
+        let date = NaiveDate::parse_from_str(&entry.date, "%Y-%m-%d").map_err(|_| format!("bad date {}", entry.date))?;
+        let mut sets = [None; 4];
+        for (i, v) in entry.sets.into_iter().take(4).enumerate() {
+            sets[i] = v;
         }
+        if sets.iter().all(|v| v.is_none()) {
+            return Err("Enter at least one set.".into());
+        }
+        let e = LogEntry { date, workout: entry.workout, exercise: entry.exercise, weight: entry.weight, sets, row: entry.row, queued: false };
+        let mut s = state.0.lock().unwrap();
+        enqueue(&mut s.pending, e);
         s.save_pending();
     }
     sync(&state).await;
@@ -349,6 +415,45 @@ fn clean_path(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn entry(ex: &str, reps: f64, row: Option<usize>) -> LogEntry {
+        LogEntry {
+            date: NaiveDate::from_ymd_opt(2026, 10, 15).unwrap(),
+            workout: "Pull".into(),
+            exercise: ex.into(),
+            weight: 10.0,
+            sets: [Some(reps), Some(reps), None, None],
+            row,
+            queued: false,
+        }
+    }
+
+    #[test]
+    fn editing_a_queued_entry_replaces_it() {
+        let mut q = vec![];
+        enqueue(&mut q, entry("Row", 8.0, None));
+        enqueue(&mut q, entry("Row", 10.0, None));
+        assert_eq!(q, vec![entry("Row", 10.0, None)]);
+        // An edit of a logged row keeps targeting that row.
+        enqueue(&mut q, entry("Curl", 8.0, Some(80)));
+        enqueue(&mut q, entry("Curl", 9.0, None));
+        assert_eq!(q[1], entry("Curl", 9.0, Some(80)));
+    }
+
+    #[test]
+    fn edit_made_during_a_send_survives_as_an_edit_of_the_new_row() {
+        // Row 8 reps was being appended when it was edited to 10.
+        let sent = vec![entry("Row", 8.0, None)];
+        let mut q = vec![entry("Row", 10.0, None), entry("Curl", 9.0, Some(80))];
+        settle(&mut q, &sent, &[(sent[0].date, "Row".into(), 81)]);
+        assert_eq!(q, vec![entry("Row", 10.0, Some(81)), entry("Curl", 9.0, Some(80))]);
+        // Sending those clears the queue.
+        let sent2 = q.clone();
+        settle(&mut q, &sent2, &[]);
+        assert!(q.is_empty());
+    }
+
     #[test]
     fn clean_path_handles_pasted_forms() {
         assert_eq!(super::clean_path("  '/a/b c.json' "), "/a/b c.json");
@@ -504,10 +609,10 @@ pub fn run() {
                 message: String::new(),
                 last_sync: None,
                 account: String::new(),
-            })));
+            }), tauri::async_runtime::Mutex::new(())));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![load, save_entries, discard_pending, save_config, data_dir, check_update, install_update, set_equipment, set_exercise, import_file, platform_info])
+        .invoke_handler(tauri::generate_handler![load, save_entry, discard_pending, save_config, data_dir, check_update, install_update, set_equipment, set_exercise, import_file, platform_info])
         .run(tauri::generate_context!())
         .expect("error while running the app");
 }

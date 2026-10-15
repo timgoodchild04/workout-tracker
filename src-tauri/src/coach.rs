@@ -213,6 +213,8 @@ pub struct Logged {
     pub verdict: Verdict,
     /// Still queued on this computer, not yet in the sheet.
     pub pending: bool,
+    /// Its row in the sheet, so an edit updates that row instead of adding another.
+    pub row: Option<usize>,
 }
 
 /// Cards for one session on `date`. The targets come from sessions before
@@ -240,7 +242,8 @@ pub fn session_cards(data: &Data, engine: &Engine, analysis: &[Analysis], sessio
             sets: data.log[i].sets,
             decision: analysis[i].decision.clone(),
             verdict: analysis[i].verdict,
-            pending: data.log[i].row.is_none(),
+            pending: data.log[i].queued || data.log[i].row.is_none(),
+            row: data.log[i].row,
         });
         let (recommended, recommended_kg, previous_weight, previous_reps, previous_date, trend, verdict, instruction) = match last {
             None => {

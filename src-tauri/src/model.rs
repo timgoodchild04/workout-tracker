@@ -147,15 +147,19 @@ pub struct SchedDay {
     pub morning: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LogEntry {
     pub date: NaiveDate,
     pub workout: String,
     pub exercise: String,
     pub weight: f64,
     pub sets: [Option<f64>; 4],
-    /// Sheet row number, or None for entries still queued locally.
+    /// Sheet row number. In the local queue: None = append as a new row,
+    /// Some(row) = an edit to that existing row.
     pub row: Option<usize>,
+    /// Set on entries merged in from the local queue (not yet in the sheet).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub queued: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -291,6 +295,7 @@ impl Data {
                     weight: c(3).num().unwrap_or(0.0),
                     sets: [c(4).num(), c(5).num(), c(6).num(), c(7).num()],
                     row: Some(i + LOG_FIRST_ROW),
+                    queued: false,
                 })
             })
             .collect();

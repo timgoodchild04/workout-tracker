@@ -66,7 +66,7 @@ a { color: var(--accent); }
 .icon-btn.spin svg { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-main { overflow-y: auto; padding: 28px 32px 120px; outline: none; }
+main { overflow-y: auto; padding: 28px 32px 48px; outline: none; }
 #view { max-width: 920px; margin: 0 auto; }
 .notice { max-width: 920px; margin: 0 auto 16px; padding: 10px 14px; border-radius: 10px; background: var(--warn-bg); color: var(--text); font-size: 13px; }
 .notice.info { background: var(--new-bg); }
@@ -95,7 +95,6 @@ input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accen
 .cards { display: grid; gap: 12px; }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px 18px; display: grid; gap: 10px; }
 .card.logged { background: color-mix(in srgb, var(--good) 5%, var(--surface)); }
-.card.logged input:disabled { opacity: 1; color: var(--text); background: var(--surface-2); }
 .card.done { border-color: color-mix(in srgb, var(--good) 45%, var(--line)); }
 .card-head { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
 .pos { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--surface-2); color: var(--text-2); display: grid; place-items: center; font-size: 12px; font-weight: 700; margin-top: 1px; }
@@ -138,9 +137,6 @@ input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accen
 .copy-btn { border: 1px solid var(--line); background: none; border-radius: 8px; padding: 7px 10px; cursor: pointer; color: var(--text-2); font-size: 12px; }
 .copy-btn:hover { background: var(--surface-2); }
 
-.savebar { position: fixed; left: 210px; right: 0; bottom: 0; padding: 12px 32px; background: color-mix(in srgb, var(--page) 88%, transparent); backdrop-filter: blur(8px); border-top: 1px solid var(--line); display: flex; justify-content: center; }
-.savebar-inner { max-width: 920px; width: 100%; display: flex; align-items: center; gap: 12px; }
-.savebar-inner .count { flex: 1; color: var(--text-2); }
 .btn { border: 1px solid var(--line); background: var(--surface); border-radius: 9px; padding: 8px 14px; cursor: pointer; font-weight: 600; }
 .btn:hover { border-color: var(--muted); }
 .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
@@ -197,8 +193,7 @@ details summary { cursor: pointer; font-weight: 600; }
   .brand, .sync span:not(.dot) { display: none; }
   .sync { margin: 0; border: 0; padding: 4px; }
   .tab { flex-direction: column; gap: 2px; font-size: 11px; padding: 6px 4px; }
-  main { padding: 18px 16px 130px; }
-  .savebar { left: 0; bottom: 58px; padding: 10px 16px; }
+  main { padding: 18px 16px 80px; }
   .load { grid-template-columns: 1fr; gap: 6px; }
   .row { grid-template-columns: 1fr; }
 }

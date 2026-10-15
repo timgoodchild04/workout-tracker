@@ -29,3 +29,23 @@ fn switch_write_is_guarded() {
         eprintln!("equipment row {} = {} ({})", e.row, e.name, if e.enabled { "on" } else { "off" });
     });
 }
+
+/// Opt-in: the Today screen's edit path. Rewrites the newest log row with the values it
+/// already holds (so nothing changes), and checks a row/exercise mismatch is refused.
+#[test]
+#[ignore]
+fn log_row_update_is_guarded() {
+    let key = std::env::var("WT_KEY").expect("set WT_KEY to the service-account key file");
+    let client = sheets::Client::new(std::path::Path::new(&key), DEFAULT_SHEET_ID).unwrap();
+    tauri::async_runtime::block_on(async {
+        let data = client.fetch().await.unwrap();
+        let last = data.log.iter().max_by_key(|e| e.row).unwrap().clone();
+        client.update_row(&last).await.unwrap();
+        let wrong = model::LogEntry { exercise: "Not An Exercise".into(), ..last.clone() };
+        let err = client.update_row(&wrong).await.unwrap_err();
+        let after = client.fetch().await.unwrap();
+        let again = after.log.iter().find(|e| e.row == last.row).unwrap();
+        assert_eq!((again.date, &again.exercise, again.weight, again.sets), (last.date, &last.exercise, last.weight, last.sets));
+        eprintln!("row {:?} {} rewritten unchanged; mismatch refused: {err}", last.row, last.exercise);
+    });
+}

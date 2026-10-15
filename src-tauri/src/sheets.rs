@@ -164,6 +164,32 @@ impl Client {
         Ok(())
     }
 
+    /// Overwrite A:H of an already-logged row with an edited entry. The row is
+    /// re-read first and must still hold the same date and exercise, so an edit
+    /// never lands on a row that moved or was replaced since the last sync.
+    pub async fn update_row(&self, e: &LogEntry) -> Result<()> {
+        let row = e.row.ok_or_else(|| anyhow!("no row to update"))?;
+        let got = self.batch_get(&[q(TAB_LOG, &format!("A{row}:C{row}"))], "UNFORMATTED_VALUE").await?;
+        let cells = got.first().and_then(|g| g.first()).cloned().unwrap_or_default();
+        let (date, exercise) = (cells.first().and_then(parse_date), cells.get(2).map(|c| c.text()).unwrap_or_default());
+        if date != Some(e.date) || exercise != e.exercise {
+            bail!("row {row} of the Workout Log no longer holds {} on {} (it has {exercise:?}). Sync and re-enter it.", e.exercise, e.date);
+        }
+        let s = |i: usize| e.sets[i].map(|v| json!(v)).unwrap_or(json!(""));
+        let range = q(TAB_LOG, &format!("A{row}:H{row}"));
+        let values = json!([[e.date.format("%Y-%m-%d").to_string(), e.workout, e.exercise, e.weight, s(0), s(1), s(2), s(3)]]);
+        let res = self
+            .http
+            .put(format!("{API}/{}/values/{}", self.sheet_id, urlencoding::encode(&range)))
+            .bearer_auth(self.token().await?)
+            .query(&[("valueInputOption", "USER_ENTERED")])
+            .json(&json!({ "range": range, "majorDimension": "ROWS", "values": values }))
+            .send()
+            .await?;
+        Self::check(res).await?;
+        Ok(())
+    }
+
     /// Write entries into the first empty rows after the last logged exercise.
     /// Re-reads column C first so two computers can't overwrite each other.
     pub async fn append(&self, entries: &[LogEntry]) -> Result<usize> {

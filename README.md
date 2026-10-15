@@ -8,7 +8,7 @@ sessions into it, and the sheet keeps working on its own exactly as before.
 
 | Screen | What's on it |
 |---|---|
-| Today | Today's scheduled session (or a rest-day note), the load to put on the bar with the plates for each side, last time's numbers and trend, and boxes to type in your reps. **Save** writes the rows to the sheet. |
+| Today | Today's scheduled session (or a rest-day note), the load to put on the bar with the plates for each side, last time's numbers and trend, and boxes to type in your reps. Each exercise saves itself to the sheet (see below), and its card shows Saved / Queued / Not saved yet. |
 | History | Every logged exercise, grouped by day, filterable by exercise. |
 | Progress | The 📈 Progress table, plus a chart of every session for the exercise you pick. |
 | Programme | The 💪 Workouts tab, read-only, with kit that's switched off struck through. |
@@ -44,10 +44,17 @@ all 74 log rows, the Dashboard and the Progress tab matched exactly.
 
 ## What the app writes to the sheet
 
-Only columns **A:H** (Date, Workout, Exercise, Weight, Set 1-4) of the next empty row(s) on
-📝 Workout Log. The helper formulas in I:AI are already filled down those rows, so the
-sheet's Dashboard and Progress tabs update as if you'd typed the rows yourself. Before
-writing, the app re-reads column C so two computers can't overwrite each other.
+Only columns **A:H** (Date, Workout, Exercise, Weight, Set 1-4) of 📝 Workout Log. The helper
+formulas in I:AI are already filled down every row, so the sheet's Dashboard and Progress
+tabs update as if you'd typed the rows yourself.
+
+There's no Save button. A card saves itself once every set is filled (after a 1.2 second
+pause, so a typo can be fixed first), when you move on to another card, or when you switch
+away from the app. A new exercise goes into the next empty row (the app re-reads column C
+first, so two computers can't overwrite each other). Changing a card that's already saved
+updates **that same row**, after re-reading it to check it still holds that date and
+exercise. Clearing a saved card's boxes never deletes its row; delete it in the sheet.
+Saves go one at a time, and a sync never runs twice at once, so nothing is written twice.
 
 The only other writes are the on/off switches in **Settings**: an exercise's *Exercise on?*
 (💪 Workouts column U) and a piece of kit's *Enabled?* (⚙️ Settings column B), one Yes/No
@@ -60,8 +67,8 @@ exercises, sets and rep ranges, is changed in the sheet.
 The log formulas stop at row 2000. The app warns you when fewer than 40 rows are left and
 refuses to write past that row.
 
-If the sheet can't be reached, saved sessions are queued on that computer and sent on the
-next sync. You can also click the sync button, or just switch back to the window, and the
+If the sheet can't be reached, saves are queued on that computer (the card says Queued) and
+sent on the next sync; editing a queued exercise just replaces it in the queue. You can also click the sync button, or just switch back to the window, and the
 app pulls in anything logged on another computer.
 
 ## Updates

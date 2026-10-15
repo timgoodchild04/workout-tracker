@@ -89,9 +89,6 @@ function readDraft() {
 function writeDraft(d) {
   try { localStorage.setItem(draftKey(), JSON.stringify(d)); } catch {}
 }
-function clearDraft() {
-  try { localStorage.removeItem(draftKey()); } catch {}
-}
 
 // ------------------------------------------------------------------ data
 
@@ -266,6 +263,7 @@ function renderToday(el) {
     ? `<p class="small muted">Loading the plates in the order shown takes ${plan.moves} plate moves this session. Loading heaviest plate first would take ${plan.naive_moves}.</p>` : "";
   const toolbar = `<div class="toolbar">
       <label class="field">Log date <input type="date" id="log-date" value="${S.logDate}"></label>
+      <span class="small muted" id="saved-count" title="Each exercise saves to the sheet by itself once its sets are in."></span>
       ${orderCtl}
       ${sv.skipped.length ? `<span class="small muted">Skipped (kit switched off): ${esc(sv.skipped.join(", "))}</span>` : ""}
       ${sv.switched_off?.length ? `<span class="small muted">Switched off in Settings: ${esc(sv.switched_off.join(", "))}</span>` : ""}
@@ -274,7 +272,7 @@ function renderToday(el) {
   const order = plan ? plan.order : sv.cards.map((_, i) => i);
   const cards = order.map((i, pos) => card(sv.cards[i], i, draft[sv.cards[i].exercise], pos + 1, plan?.changes[i] || [])).join("");
 
-  el.innerHTML = head + chips + off + rest + toolbar + kitNote + stackNote + `<div class="cards">${cards}</div>` + saveBar();
+  el.innerHTML = head + chips + off + rest + toolbar + kitNote + stackNote + `<div class="cards">${cards}</div>`;
 
   $$(".chip", el).forEach((b) => b.addEventListener("click", () => { S.session = b.dataset.session; render(); }));
   $("#back-to-schedule")?.addEventListener("click", (e) => { e.preventDefault(); S.session = null; render(); });
@@ -285,10 +283,10 @@ function renderToday(el) {
   }));
   $("#log-date").addEventListener("change", (e) => { S.logDate = e.target.value || isoToday(); load(false); });
   $$("a[data-url]", el).forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); openUrl(a.dataset.url); }));
-  $$(".card:not(.logged) input", el).forEach((inp) => inp.addEventListener("input", onEntryInput));
+  $$(".card input", el).forEach((inp) => inp.addEventListener("input", onEntryInput));
+  $$(".card", el).forEach((c) => c.addEventListener("focusout", onCardLeave));
   $$(".copy-btn", el).forEach((b) => b.addEventListener("click", () => fillSets(b.closest(".card"))));
-  $("#save").addEventListener("click", saveSession);
-  updateSaveBar();
+  updateSavedCount();
 }
 
 function card(c, i, d, pos, changes) {
@@ -296,10 +294,10 @@ function card(c, i, d, pos, changes) {
   const lg = c.logged;
   const [main, detail] = splitLoad(c.recommended, c.load_type);
   const n = Math.min(c.sets, 4);
-  const sets = lg ? lg.sets.map((x) => (x == null ? "" : num(x))) : d?.sets || [];
-  const weight = lg ? lg.weight : d?.weight ?? (bw ? 0 : c.recommended_kg);
+  // Unsaved edits (the local draft) win over what's saved, so nothing typed is lost on a re-render.
+  const sets = d?.sets ?? (lg ? lg.sets.map((x) => (x == null ? "" : num(x))) : []);
+  const weight = d?.weight ?? (lg ? lg.weight : bw ? 0 : c.recommended_kg);
   const done = lg || sets.some((x) => x !== "" && x != null);
-  const ro = lg ? "disabled" : "";
   const title = c.video
     ? `<a href="#" data-url="${esc(c.video)}" title="Watch how-to video">${esc(c.exercise)}<span class="play">▶ video</span></a>`
     : esc(c.exercise);
@@ -313,7 +311,7 @@ function card(c, i, d, pos, changes) {
       <div class="card-title">${title}
         <div class="meta">${esc(c.equipment)} · ${c.sets} × ${num(c.rep_low)}–${num(c.rep_high)}${c.substituted ? ` · <span title="Main kit is switched off">instead of ${esc(c.original)}</span>` : ""}</div>
       </div>
-      ${lg ? pill(lg.pending ? "queued" : "increase", lg.pending ? "Queued" : "✓ Logged") : pill(c.verdict)}
+      <span class="save-state">${saveState(c, d)}</span>
     </div>
     <div class="load">
       <div><div class="sublabel">${lg ? "Target was" : "Load today"}</div><div class="load-main">${esc(main)}</div><div class="load-detail">${esc(detail)}</div></div>
@@ -322,9 +320,9 @@ function card(c, i, d, pos, changes) {
     ${changes.length ? `<div class="swap"><span class="sublabel">Plates before this exercise</span>${changes.map((x) => `<div class="${x.startsWith("Sleeve now") ? "sleeve" : ""}">${esc(x)}</div>`).join("")}</div>` : ""}
     <div class="instr" title="${esc(lg ? lg.decision : c.instruction)}">${lg ? `<b>Next time:</b> ${esc(nextLine(lg.decision))}` : esc(coachLine(c))}</div>
     <div class="entry">
-      ${bw ? "" : `<label>Weight<input class="wt" type="number" step="0.5" min="0" inputmode="decimal" data-k="weight" value="${esc(num(weight))}" ${ro}></label><span class="unit">${unit}</span><span class="gap"></span>`}
-      ${Array.from({ length: n }, (_, k) => `<label>Set ${k + 1}<input type="number" min="0" step="1" inputmode="numeric" data-k="set" data-s="${k}" placeholder="" value="${esc(sets[k] ?? "")}" ${ro}></label>`).join("")}
-      ${lg ? "" : `<button class="copy-btn" type="button" title="Fill every set with the top of the range">All ${num(c.rep_high)}</button>`}
+      ${bw ? "" : `<label>Weight<input class="wt" type="number" step="0.5" min="0" inputmode="decimal" data-k="weight" value="${esc(num(weight))}"></label><span class="unit">${unit}</span><span class="gap"></span>`}
+      ${Array.from({ length: n }, (_, k) => `<label>Set ${k + 1}<input type="number" min="0" step="1" inputmode="numeric" data-k="set" data-s="${k}" placeholder="" value="${esc(sets[k] ?? "")}"></label>`).join("")}
+      <button class="copy-btn" type="button" title="Fill every set with the top of the range">All ${num(c.rep_high)}</button>
     </div>
   </article>`;
 }
@@ -337,13 +335,124 @@ function readCard(cardEl) {
   };
 }
 
+// ---------------------------------------------------------------- auto-save
+// Each card saves itself: once every set is filled (after a short pause, so a typo
+// can be fixed first) or when you move on to another card. A card that's already in
+// the sheet updates its own row. Saves run one at a time, in the order they happen.
+
+const SAVE_DELAY = 1200;
+const saveTimers = new Map();   // exercise -> pending timeout
+const saving = new Set();       // exercises with a save in flight
+const saveErrors = {};          // exercise -> last error
+let saveChain = Promise.resolve();
+let renderQueued = false;
+
+/** Values as typed: weight number, sets as numbers or null. */
+function cardEntry(cardEl) {
+  const r = readCard(cardEl);
+  return { weight: Number(r.weight) || 0, sets: r.sets.map((x) => (x === "" ? null : Number(x))) };
+}
+
+const sameSets = (a, b) => [0, 1, 2, 3].every((k) => (a[k] ?? null) === (b[k] ?? null));
+
+/** Does the draft differ from what's saved for this card? */
+function unsaved(c, d) {
+  if (!d) return false;
+  const sets = d.sets.map((x) => (x === "" ? null : Number(x)));
+  if (!c.logged) return sets.some((x) => x != null);
+  return (Number(d.weight) || 0) !== c.logged.weight || !sameSets(sets, c.logged.sets);
+}
+
+/** Status pill for a card. */
+function saveState(c, d) {
+  const ex = c.exercise;
+  if (saving.has(ex)) return pill("queued", "Saving…");
+  if (saveErrors[ex]) return `<span title="${esc(saveErrors[ex])}">${pill("reduce", "Not saved")}</span>`;
+  if (unsaved(c, d)) return pill("queued", "Not saved yet");
+  if (c.logged) return c.logged.pending ? pill("queued", "Queued") : pill("increase", "✓ Saved");
+  return pill(c.verdict);
+}
+
+function refreshCardStates() {
+  const cards = currentCards();
+  const draft = readDraft();
+  $$(".card").forEach((el) => {
+    const c = cards[el.dataset.i];
+    if (c) $(".save-state", el).innerHTML = saveState(c, draft[c.exercise]);
+  });
+  updateSavedCount();
+}
+
+function updateSavedCount() {
+  const el = $("#saved-count");
+  if (!el) return;
+  const cards = currentCards();
+  const saved = cards.filter((c) => c.logged).length;
+  el.textContent = cards.length ? `${saved} of ${cards.length} saved${saved && cards.some((c) => c.logged?.pending) ? " (some queued)" : ""}` : "";
+}
+
+/** Re-render, unless you're mid-entry in a card: then just refresh the statuses and wait. */
+function renderWhenIdle() {
+  if (document.activeElement?.closest?.(".card")) {
+    renderQueued = true;
+    refreshCardStates();
+  } else {
+    renderQueued = false;
+    render();
+  }
+}
+
 function onEntryInput(e) {
   const cardEl = e.target.closest(".card");
+  const ex = cardEl.dataset.exercise;
   const d = readDraft();
-  d[cardEl.dataset.exercise] = readCard(cardEl);
+  d[ex] = readCard(cardEl);
   writeDraft(d);
-  cardEl.classList.toggle("done", d[cardEl.dataset.exercise].sets.some((x) => x !== ""));
-  updateSaveBar();
+  delete saveErrors[ex];
+  const filled = d[ex].sets.filter((x) => x !== "").length;
+  cardEl.classList.toggle("done", filled > 0 || cardEl.classList.contains("logged"));
+  clearTimeout(saveTimers.get(ex));
+  if (filled === Number(cardEl.dataset.sets)) saveTimers.set(ex, setTimeout(() => autoSave(cardEl), SAVE_DELAY));
+  refreshCardStates();
+}
+
+/** Focus left a card: save it now, and catch up on any re-render that was held back. */
+function onCardLeave(e) {
+  const cardEl = e.currentTarget;
+  if (e.relatedTarget && cardEl.contains(e.relatedTarget)) return;
+  autoSave(cardEl);
+  if (renderQueued && !(e.relatedTarget && e.relatedTarget.closest?.(".card"))) setTimeout(renderWhenIdle, 0);
+}
+
+function autoSave(cardEl) {
+  const ex = cardEl.dataset.exercise;
+  clearTimeout(saveTimers.get(ex));
+  const c = currentCards()[cardEl.dataset.i];
+  if (!c || c.exercise !== ex) return;
+  const v = cardEntry(cardEl);
+  if (v.sets.every((x) => x == null)) return; // nothing to save (clearing never deletes a saved row)
+  if (c.logged && v.weight === c.logged.weight && sameSets(v.sets, c.logged.sets)) return; // unchanged
+  const entry = { date: S.logDate, workout: currentSession(), exercise: ex, weight: v.weight, sets: v.sets, row: c.logged?.row ?? null };
+  saving.add(ex);
+  refreshCardStates();
+  saveChain = saveChain.then(async () => {
+    try {
+      S.view = await invoke("save_entry", { entry });
+      delete saveErrors[ex];
+      // Drop the draft only if nothing more was typed while this was saving.
+      const d = readDraft();
+      if (d[ex] && sameSets(d[ex].sets.map((x) => (x === "" ? null : Number(x))), entry.sets) && (Number(d[ex].weight) || 0) === entry.weight) {
+        delete d[ex];
+        writeDraft(d);
+      }
+      if (/^Couldn't save/.test(S.view.status.message)) toast(S.view.status.message, 6000);
+    } catch (err) {
+      saveErrors[ex] = String(err);
+      toast(`${ex} not saved: ${err}`, 6000);
+    }
+    saving.delete(ex);
+    renderWhenIdle();
+  });
 }
 
 function fillSets(cardEl) {
@@ -354,52 +463,6 @@ function fillSets(cardEl) {
 
 function currentCards() {
   return (S.view.sessions.find((s) => s.name === currentSession()) || { cards: [] }).cards;
-}
-
-function saveBar() {
-  return `<div class="savebar"><div class="savebar-inner">
-    <span class="count" id="save-count"></span>
-    <button class="btn primary" id="save" disabled>Save</button></div></div>`;
-}
-
-function updateSaveBar() {
-  const done = $$(".card.done:not(.logged)").length;
-  const logged = $$(".card.logged").length;
-  const total = $$(".card").length;
-  const snap = S.view.status.mode === "snapshot";
-  $("#save-count").textContent = !total ? "No exercises in this session"
-    : logged === total ? `All ${total} exercises logged for ${fmtDate(S.logDate)}`
-    : `${logged} of ${total} logged${done ? ` · ${done} ready to save` : ""}`;
-  const b = $("#save");
-  b.disabled = !done || S.busy;
-  b.textContent = snap ? `Queue ${done || ""} (snapshot mode)` : `Save ${done || ""} to sheet`;
-}
-
-async function saveSession() {
-  const entries = $$(".card.done:not(.logged)").map((cardEl) => {
-    const r = readCard(cardEl);
-    return {
-      date: S.logDate,
-      workout: currentSession(),
-      exercise: cardEl.dataset.exercise,
-      weight: Number(r.weight) || 0,
-      sets: r.sets.map((x) => (x === "" ? null : Number(x))),
-    };
-  });
-  if (!entries.length) return;
-  setBusy(true);
-  $("#save").disabled = true;
-  try {
-    S.view = await invoke("save_entries", { entries });
-    const st = S.view.status;
-    if (st.pending) toast(`${entries.length} saved on this computer. They'll go to the sheet next time it's reachable.`, 5000);
-    else toast(`${entries.length} exercise${entries.length > 1 ? "s" : ""} saved to the sheet.`);
-    clearDraft();
-  } catch (e) {
-    toast(String(e), 6000);
-  }
-  setBusy(false);
-  render();
 }
 
 // ---------------------------------------------------------------- History
@@ -709,6 +772,11 @@ function switchTab(t) {
 $$(".tab").forEach((b) => b.addEventListener("click", () => switchTab(b.dataset.view)));
 $("#refresh").addEventListener("click", () => !S.busy && load(true));
 window.addEventListener("resize", () => { if (S.tab === "progress") render(); });
+// Switching away mid-card saves that card, so nothing waits on you coming back.
+window.addEventListener("blur", () => {
+  const cardEl = document.activeElement?.closest?.(".card");
+  if (cardEl) autoSave(cardEl);
+});
 // Pick up entries logged on another computer when the window comes back into focus.
 window.addEventListener("focus", () => { if (S.view?.status?.mode === "sheets" && !S.busy) load(true); });
 
