@@ -1,0 +1,267 @@
+//! Plain data read from the workbook. Both sources (Google Sheets and a local
+//! .xlsx snapshot) produce the same `Grid`s, and `Data::from_grids` turns them
+//! into typed rows using the workbook's fixed layout.
+
+use chrono::{Duration, NaiveDate};
+use serde::{Deserialize, Serialize};
+
+pub const TAB_WORKOUTS: &str = "💪 Workouts";
+pub const TAB_SETTINGS: &str = "⚙️ Settings";
+pub const TAB_SCHEDULE: &str = "Schedule";
+pub const TAB_LOG: &str = "📝 Workout Log";
+
+/// Ranges the app reads. Rows/columns match the sheet's own named ranges.
+pub const RANGE_WORKOUTS: &str = "A5:L61";
+pub const RANGE_SETTINGS: &str = "A1:D100";
+pub const RANGE_SCHEDULE: &str = "B13:D19";
+pub const LOG_FIRST_ROW: usize = 2;
+/// The log's helper formulas are filled down to row 393 and the Dashboard
+/// lookups stop at row 384, so the sheet only "sees" entries up to here.
+pub const LOG_LAST_FORMULA_ROW: usize = 384;
+pub const RANGE_LOG: &str = "A2:H2000";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Cell {
+    Empty,
+    Num(f64),
+    Str(String),
+    Bool(bool),
+}
+
+impl Cell {
+    pub fn num(&self) -> Option<f64> {
+        match self {
+            Cell::Num(n) => Some(*n),
+            Cell::Str(s) => s.trim().parse().ok(),
+            _ => None,
+        }
+    }
+    pub fn text(&self) -> String {
+        match self {
+            Cell::Empty => String::new(),
+            Cell::Num(n) => crate::engine::fmt_num(*n),
+            Cell::Str(s) => s.trim().to_string(),
+            Cell::Bool(b) => if *b { "TRUE".into() } else { "FALSE".into() },
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Cell::Empty) || matches!(self, Cell::Str(s) if s.trim().is_empty())
+    }
+}
+
+pub type Grid = Vec<Vec<Cell>>;
+
+pub fn at(g: &Grid, r: usize, c: usize) -> &Cell {
+    static EMPTY: Cell = Cell::Empty;
+    g.get(r).and_then(|row| row.get(c)).unwrap_or(&EMPTY)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Plate {
+    pub weight: f64,
+    pub owned: f64,
+    pub enabled: bool,
+}
+impl Plate {
+    pub fn usable_pairs(&self) -> u32 {
+        if self.enabled { (self.owned / 2.0).floor().max(0.0) as u32 } else { 0 }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Equipment {
+    pub name: String,
+    pub enabled: bool,
+    pub load_type: String,
+    pub notes: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LadderStep {
+    pub equipment: String,
+    pub label: String,
+    pub kg: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Settings {
+    pub bar_weight: f64,
+    pub handle_weight: f64,
+    pub plates: Vec<Plate>,
+    pub jump_pct: f64,
+    pub jump_abs: f64,
+    pub ceiling_streak: f64,
+    pub drop_pct: f64,
+    pub equipment: Vec<Equipment>,
+    pub ladder: Vec<LadderStep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProgRow {
+    pub workout: String,
+    pub exercise: String,
+    pub sets: u32,
+    pub rep_low: f64,
+    pub rep_high: f64,
+    pub start_weight: f64,
+    pub equipment: String,
+    pub video: String,
+    pub alt_exercise: String,
+    pub alt_equipment: String,
+    pub alt_start_weight: f64,
+    pub alt_video: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchedDay {
+    pub day: String,
+    pub session: String,
+    pub notes: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogEntry {
+    pub date: NaiveDate,
+    pub workout: String,
+    pub exercise: String,
+    pub weight: f64,
+    pub sets: [Option<f64>; 4],
+    /// Sheet row number, or None for entries still queued locally.
+    pub row: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Data {
+    pub settings: Settings,
+    pub programme: Vec<ProgRow>,
+    pub schedule: Vec<SchedDay>,
+    pub log: Vec<LogEntry>,
+}
+
+/// Google/Excel serial date (days since 1899-12-30).
+pub fn serial_to_date(n: f64) -> Option<NaiveDate> {
+    NaiveDate::from_ymd_opt(1899, 12, 30)?.checked_add_signed(Duration::days(n.floor() as i64))
+}
+
+pub fn parse_date(c: &Cell) -> Option<NaiveDate> {
+    match c {
+        Cell::Num(n) => serial_to_date(*n),
+        Cell::Str(s) => {
+            let s = s.trim();
+            NaiveDate::parse_from_str(s, "%d/%m/%Y")
+                .or_else(|_| NaiveDate::parse_from_str(s, "%Y-%m-%d"))
+                .or_else(|_| NaiveDate::parse_from_str(&s[..s.len().min(10)], "%Y-%m-%d"))
+                .ok()
+        }
+        _ => None,
+    }
+}
+
+/// Pull a URL out of a cell that is either a plain link or =HYPERLINK("url","label").
+pub fn extract_url(c: &Cell) -> String {
+    let s = c.text();
+    if let Some(i) = s.find("http") {
+        let rest = &s[i..];
+        let end = rest.find(['"', ' ']).unwrap_or(rest.len());
+        return rest[..end].to_string();
+    }
+    String::new()
+}
+
+fn yes(c: &Cell) -> bool {
+    match c {
+        Cell::Bool(b) => *b,
+        _ => c.text().eq_ignore_ascii_case("yes"),
+    }
+}
+
+impl Data {
+    /// `settings` is A1:D100, `workouts` A5:L61, `schedule` B13:D19, `log` A2:H…
+    pub fn from_grids(workouts: &Grid, settings: &Grid, schedule: &Grid, log: &Grid) -> Data {
+        let s = |r: usize, c: usize| at(settings, r - 1, c); // 1-based sheet rows
+        let num = |r: usize, c: usize, d: f64| s(r, c).num().unwrap_or(d);
+
+        let plates = (9..=12)
+            .filter_map(|r| {
+                let w = s(r, 0).num()?;
+                Some(Plate { weight: w, owned: num(r, 1, 0.0), enabled: yes(s(r, 2)) })
+            })
+            .collect();
+        let equipment = (33..=52)
+            .filter(|&r| !s(r, 0).is_empty())
+            .map(|r| Equipment {
+                name: s(r, 0).text(),
+                enabled: yes(s(r, 1)),
+                load_type: s(r, 2).text(),
+                notes: s(r, 3).text(),
+            })
+            .collect();
+        let ladder = (61..=100)
+            .filter(|&r| !s(r, 0).is_empty() && s(r, 2).num().is_some())
+            .map(|r| LadderStep { equipment: s(r, 0).text(), label: s(r, 1).text(), kg: num(r, 2, 0.0) })
+            .collect();
+        let settings = Settings {
+            bar_weight: num(5, 1, 0.0),
+            handle_weight: num(6, 1, 0.0),
+            plates,
+            jump_pct: num(22, 1, 0.15),
+            jump_abs: num(23, 1, 2.5),
+            ceiling_streak: num(24, 1, 1.0),
+            drop_pct: num(25, 1, 0.25),
+            equipment,
+            ladder,
+        };
+
+        let programme = workouts
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !at(workouts, *i, 1).is_empty())
+            .map(|(i, _)| {
+                let c = |col: usize| at(workouts, i, col);
+                ProgRow {
+                    workout: c(0).text(),
+                    exercise: c(1).text(),
+                    sets: c(2).num().unwrap_or(3.0) as u32,
+                    rep_low: c(3).num().unwrap_or(0.0),
+                    rep_high: c(4).num().unwrap_or(0.0),
+                    start_weight: c(5).num().unwrap_or(0.0),
+                    equipment: c(6).text(),
+                    video: extract_url(c(7)),
+                    alt_exercise: c(8).text(),
+                    alt_equipment: c(9).text(),
+                    alt_start_weight: c(10).num().unwrap_or(0.0),
+                    alt_video: extract_url(c(11)),
+                }
+            })
+            .collect();
+
+        let schedule = (0..7)
+            .map(|i| SchedDay {
+                day: at(schedule, i, 0).text(),
+                session: at(schedule, i, 1).text(),
+                notes: at(schedule, i, 2).text(),
+            })
+            .collect();
+
+        let log = log
+            .iter()
+            .enumerate()
+            .filter_map(|(i, _)| {
+                let c = |col: usize| at(log, i, col);
+                if c(2).is_empty() {
+                    return None;
+                }
+                Some(LogEntry {
+                    date: parse_date(c(0)).unwrap_or_default(),
+                    workout: c(1).text(),
+                    exercise: c(2).text(),
+                    weight: c(3).num().unwrap_or(0.0),
+                    sets: [c(4).num(), c(5).num(), c(6).num(), c(7).num()],
+                    row: Some(i + LOG_FIRST_ROW),
+                })
+            })
+            .collect();
+
+        Data { settings, programme, schedule, log }
+    }
+}

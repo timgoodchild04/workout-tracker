@@ -1,0 +1,181 @@
+//! Google Sheets backend, authenticated as a service account (a JSON key file
+//! copied to each computer; the sheet is shared with the account's email).
+//!
+//! The app only ever WRITES columns A:H of the next empty row(s) on the
+//! 📝 Workout Log tab. Everything else is read-only; the sheet's own formulas
+//! keep working on the rows the app writes.
+
+use crate::model::*;
+use anyhow::{anyhow, bail, Context, Result};
+use serde::Deserialize;
+use serde_json::{json, Value};
+use std::path::Path;
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+const SCOPE: &str = "https://www.googleapis.com/auth/spreadsheets";
+const API: &str = "https://sheets.googleapis.com/v4/spreadsheets";
+
+#[derive(Deserialize, Clone)]
+pub struct ServiceAccount {
+    pub client_email: String,
+    pub private_key: String,
+    #[serde(default = "default_token_uri")]
+    pub token_uri: String,
+}
+fn default_token_uri() -> String {
+    "https://oauth2.googleapis.com/token".into()
+}
+
+pub struct Client {
+    sa: ServiceAccount,
+    sheet_id: String,
+    http: reqwest::Client,
+    token: Mutex<Option<(String, Instant)>>,
+}
+
+pub fn read_key(path: &Path) -> Result<ServiceAccount> {
+    let raw = std::fs::read_to_string(path).with_context(|| format!("can't read key file {}", path.display()))?;
+    serde_json::from_str(&raw).context("key file isn't a Google service-account JSON key")
+}
+
+fn q(tab: &str, a1: &str) -> String {
+    format!("'{}'!{}", tab.replace('\'', "''"), a1)
+}
+
+fn to_cell(v: &Value) -> Cell {
+    match v {
+        Value::Number(n) => Cell::Num(n.as_f64().unwrap_or(0.0)),
+        Value::String(s) if s.trim().is_empty() => Cell::Empty,
+        Value::String(s) => Cell::Str(s.clone()),
+        Value::Bool(b) => Cell::Bool(*b),
+        _ => Cell::Empty,
+    }
+}
+
+impl Client {
+    pub fn new(key_path: &Path, sheet_id: &str) -> Result<Client> {
+        Ok(Client {
+            sa: read_key(key_path)?,
+            sheet_id: sheet_id.trim().to_string(),
+            http: reqwest::Client::builder().timeout(Duration::from_secs(20)).build()?,
+            token: Mutex::new(None),
+        })
+    }
+
+    pub fn account_email(&self) -> &str {
+        &self.sa.client_email
+    }
+
+    async fn token(&self) -> Result<String> {
+        if let Some((t, exp)) = self.token.lock().unwrap().as_ref() {
+            if Instant::now() < *exp {
+                return Ok(t.clone());
+            }
+        }
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let claims = json!({ "iss": self.sa.client_email, "scope": SCOPE, "aud": self.sa.token_uri, "iat": now, "exp": now + 3600 });
+        let key = jsonwebtoken::EncodingKey::from_rsa_pem(self.sa.private_key.as_bytes())?;
+        let jwt = jsonwebtoken::encode(&jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256), &claims, &key)?;
+        let res: Value = self
+            .http
+            .post(&self.sa.token_uri)
+            .form(&[("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"), ("assertion", jwt.as_str())])
+            .send()
+            .await?
+            .json()
+            .await?;
+        let t = res["access_token"].as_str().ok_or_else(|| anyhow!("Google sign-in failed: {}", res))?.to_string();
+        *self.token.lock().unwrap() = Some((t.clone(), Instant::now() + Duration::from_secs(3000)));
+        Ok(t)
+    }
+
+    async fn check(res: reqwest::Response) -> Result<Value> {
+        let status = res.status();
+        let body: Value = res.json().await.unwrap_or(Value::Null);
+        if !status.is_success() {
+            let msg = body["error"]["message"].as_str().unwrap_or("unknown error");
+            if status.as_u16() == 403 || status.as_u16() == 404 {
+                bail!("Google Sheets said: {msg}. Is the sheet shared (Editor) with the service account email?");
+            }
+            bail!("Google Sheets error {status}: {msg}");
+        }
+        Ok(body)
+    }
+
+    async fn batch_get(&self, ranges: &[String], render: &str) -> Result<Vec<Grid>> {
+        let mut params: Vec<(&str, &str)> = ranges.iter().map(|r| ("ranges", r.as_str())).collect();
+        params.push(("valueRenderOption", render));
+        params.push(("dateTimeRenderOption", "SERIAL_NUMBER"));
+        let res = self
+            .http
+            .get(format!("{API}/{}/values:batchGet", self.sheet_id))
+            .bearer_auth(self.token().await?)
+            .query(&params)
+            .send()
+            .await?;
+        let body = Self::check(res).await?;
+        Ok(body["valueRanges"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|vr| {
+                        vr["values"]
+                            .as_array()
+                            .map(|rows| rows.iter().map(|r| r.as_array().map(|c| c.iter().map(to_cell).collect()).unwrap_or_default()).collect())
+                            .unwrap_or_default()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    pub async fn fetch(&self) -> Result<Data> {
+        // Workouts as FORMULA so the =HYPERLINK(...) video URLs come through.
+        let w = self.batch_get(&[q(TAB_WORKOUTS, RANGE_WORKOUTS)], "FORMULA").await?;
+        let rest = self
+            .batch_get(&[q(TAB_SETTINGS, RANGE_SETTINGS), q(TAB_SCHEDULE, RANGE_SCHEDULE), q(TAB_LOG, RANGE_LOG)], "UNFORMATTED_VALUE")
+            .await?;
+        if w.is_empty() || rest.len() < 3 {
+            bail!("the sheet didn't return the expected tabs");
+        }
+        Ok(Data::from_grids(&w[0], &rest[0], &rest[1], &rest[2]))
+    }
+
+    /// Write entries into the first empty rows after the last logged exercise.
+    /// Re-reads column C first so two computers can't overwrite each other.
+    pub async fn append(&self, entries: &[LogEntry]) -> Result<usize> {
+        if entries.is_empty() {
+            return Ok(0);
+        }
+        let col = self.batch_get(&[q(TAB_LOG, "C2:C2000")], "UNFORMATTED_VALUE").await?;
+        let col = col.first().cloned().unwrap_or_default();
+        let last = col.iter().rposition(|r| r.first().is_some_and(|c| !c.is_empty()));
+        let first_row = last.map_or(LOG_FIRST_ROW, |i| i + LOG_FIRST_ROW + 1);
+        let last_row = first_row + entries.len() - 1;
+        if last_row > LOG_LAST_FORMULA_ROW {
+            bail!(
+                "the Workout Log's formulas stop at row {LOG_LAST_FORMULA_ROW} and these entries would reach row {last_row}. \
+                 Extend the log's formulas (and the Dashboard ranges) in the sheet first."
+            );
+        }
+        let values: Vec<Value> = entries
+            .iter()
+            .map(|e| {
+                let s = |i: usize| e.sets[i].map(|v| json!(v)).unwrap_or(json!(""));
+                json!([e.date.format("%Y-%m-%d").to_string(), e.workout, e.exercise, e.weight, s(0), s(1), s(2), s(3)])
+            })
+            .collect();
+        let range = q(TAB_LOG, &format!("A{first_row}:H{last_row}"));
+        let res = self
+            .http
+            .put(format!("{API}/{}/values/{}", self.sheet_id, urlencoding::encode(&range)))
+            .bearer_auth(self.token().await?)
+            .query(&[("valueInputOption", "USER_ENTERED")])
+            .json(&json!({ "range": range, "majorDimension": "ROWS", "values": values }))
+            .send()
+            .await?;
+        Self::check(res).await?;
+        Ok(first_row)
+    }
+}
