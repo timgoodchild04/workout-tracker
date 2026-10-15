@@ -49,7 +49,7 @@ fn dashboard_and_progress_match_sheet() {
 
     let dash = tab(&path, "🏠 Dashboard");
     let session = cell(&dash, 3, 2);
-    let (cards, _) = coach::session_cards(&data, &engine, &a, &session);
+    let (cards, _) = coach::session_cards(&data, &engine, &a, &session, chrono::NaiveDate::MAX);
     for (i, c) in cards.iter().enumerate() {
         let r = 6 + i as u32;
         for (name, ours, theirs) in [
@@ -97,7 +97,7 @@ fn plate_plans() {
     let engine = Engine::new(&data.settings);
     let a = coach::analyse(&data, &engine);
     for s in coach::sessions(&data) {
-        let (cards, _) = coach::session_cards(&data, &engine, &a, &s);
+        let (cards, _) = coach::session_cards(&data, &engine, &a, &s, chrono::NaiveDate::from_ymd_opt(2026, 10, 15).unwrap());
         let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
         let (start, from) = workout_tracker_lib::plan::kit_before(&data, &a, &engine, today);
         eprintln!("\nkit before {today} (from {from:?}): {:?}", workout_tracker_lib::plan::Kit::new(&start, from));

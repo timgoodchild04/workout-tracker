@@ -94,6 +94,8 @@ input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accen
 /* exercise cards */
 .cards { display: grid; gap: 12px; }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px 18px; display: grid; gap: 10px; }
+.card.logged { background: color-mix(in srgb, var(--good) 5%, var(--surface)); }
+.card.logged input:disabled { opacity: 1; color: var(--text); background: var(--surface-2); }
 .card.done { border-color: color-mix(in srgb, var(--good) 45%, var(--line)); }
 .card-head { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
 .pos { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--surface-2); color: var(--text-2); display: grid; place-items: center; font-size: 12px; font-weight: 700; margin-top: 1px; }

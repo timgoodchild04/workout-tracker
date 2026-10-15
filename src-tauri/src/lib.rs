@@ -33,6 +33,8 @@ impl Default for Config {
 
 struct Inner {
     dir: PathBuf,
+    /// Date picked on the Today screen (None = today).
+    view_date: Option<NaiveDate>,
     config: Config,
     data: Option<Data>,
     pending: Vec<LogEntry>,
@@ -152,14 +154,15 @@ fn build_view(s: &Inner) -> View {
     let last_row = base.log.iter().filter_map(|e| e.row).max().unwrap_or(model::LOG_FIRST_ROW - 1);
     view.status.rows_left = Some(model::LOG_LAST_FORMULA_ROW as i64 - last_row as i64 - s.pending.len() as i64);
     let today = Local::now().date_naive();
+    let date = s.view_date.unwrap_or(today);
     view.today = Some(coach::today(&data.schedule, today));
-    // Plates stay on between sessions: start today from where the last one ended.
-    let (start, from) = plan::kit_before(&data, &analysis, &engine, today);
+    // Plates stay on between sessions: start from where the last one before this date ended.
+    let (start, from) = plan::kit_before(&data, &analysis, &engine, date);
     view.kit = Some(plan::Kit::new(&start, from));
     view.sessions = coach::sessions(&data)
         .into_iter()
         .map(|name| {
-            let (cards, skipped) = coach::session_cards(&data, &engine, &analysis, &name);
+            let (cards, skipped) = coach::session_cards(&data, &engine, &analysis, &name, date);
             let (programme_plan, best_plan) = plan::plans(&cards, &engine, &start);
             SessionView { name, cards, skipped, programme_plan, best_plan }
         })
@@ -275,7 +278,8 @@ async fn sync(state: &AppState) {
 // ------------------------------------------------------------------ commands
 
 #[tauri::command]
-async fn load(state: State<'_, AppState>, refresh: bool) -> Result<View, String> {
+async fn load(state: State<'_, AppState>, refresh: bool, date: Option<String>) -> Result<View, String> {
+    state.0.lock().unwrap().view_date = date.and_then(|d| NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok());
     let needs = refresh || state.0.lock().unwrap().last_sync.is_none();
     if needs {
         sync(&state).await;
@@ -351,6 +355,7 @@ pub fn run() {
             let pending: Vec<LogEntry> = read_json(&dir.join("pending.json")).unwrap_or_default();
             app.manage(AppState(Mutex::new(Inner {
                 dir,
+                view_date: None,
                 config,
                 data,
                 pending,

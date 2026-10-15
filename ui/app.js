@@ -73,6 +73,11 @@ function coachLine(c) {
   }
 }
 
+// "🟢 Increase — next time load 16kg total — …" -> "Increase — next time load 16kg total — …"
+function nextLine(decision) {
+  return (decision || "").replace(/^\S+\s/, "");
+}
+
 // ------------------------------------------------------------------ drafts
 // Reps typed into the Today screen survive closing the app (per date + session).
 
@@ -92,7 +97,7 @@ function clearDraft() {
 async function load(refresh = false) {
   setBusy(true);
   try {
-    S.view = await invoke("load", { refresh });
+    S.view = await invoke("load", { refresh, date: S.logDate });
   } catch (e) {
     toast(String(e));
   }
@@ -108,7 +113,10 @@ function setBusy(b) {
 function currentSession() {
   const v = S.view;
   if (S.session) return S.session;
-  if (v?.today && !v.today.is_rest) return v.today.session;
+  // Already logged something on this date? Show that session, even off-schedule.
+  const done = v?.history?.find((h) => h.date === S.logDate);
+  if (done && v.sessions.some((x) => x.name === done.workout)) return done.workout;
+  if (v?.today && !v.today.is_rest && S.logDate === v.today.date) return v.today.session;
   return v?.sessions?.[0]?.name ?? "";
 }
 
@@ -212,9 +220,9 @@ function renderToday(el) {
     try { localStorage.setItem("order", S.order); } catch {}
     render();
   }));
-  $("#log-date").addEventListener("change", (e) => { S.logDate = e.target.value || isoToday(); render(); });
+  $("#log-date").addEventListener("change", (e) => { S.logDate = e.target.value || isoToday(); load(false); });
   $$("a[data-url]", el).forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); openUrl(a.dataset.url); }));
-  $$(".card input", el).forEach((inp) => inp.addEventListener("input", onEntryInput));
+  $$(".card:not(.logged) input", el).forEach((inp) => inp.addEventListener("input", onEntryInput));
   $$(".copy-btn", el).forEach((b) => b.addEventListener("click", () => fillSets(b.closest(".card"))));
   $("#save").addEventListener("click", saveSession);
   updateSaveBar();
@@ -222,11 +230,13 @@ function renderToday(el) {
 
 function card(c, i, d, pos, changes) {
   const bw = c.load_type === "Bodyweight";
+  const lg = c.logged;
   const [main, detail] = splitLoad(c.recommended, c.load_type);
   const n = Math.min(c.sets, 4);
-  const sets = d?.sets || [];
-  const weight = d?.weight ?? (bw ? 0 : c.recommended_kg);
-  const done = sets.some((x) => x !== "" && x != null);
+  const sets = lg ? lg.sets.map((x) => (x == null ? "" : num(x))) : d?.sets || [];
+  const weight = lg ? lg.weight : d?.weight ?? (bw ? 0 : c.recommended_kg);
+  const done = lg || sets.some((x) => x !== "" && x != null);
+  const ro = lg ? "disabled" : "";
   const title = c.video
     ? `<a href="#" data-url="${esc(c.video)}" title="Watch how-to video">${esc(c.exercise)}<span class="play">▶ video</span></a>`
     : esc(c.exercise);
@@ -234,24 +244,24 @@ function card(c, i, d, pos, changes) {
     ? `Last time (${esc(fmtDate(c.previous_date))}): <b>${c.previous_weight != null ? num(c.previous_weight) + "kg" : "BW"}</b> · ${esc(c.previous_reps)} · ${esc(c.trend)}`
     : "No sessions logged yet";
   const unit = bw ? "" : c.load_type === "Fixed steps" ? "kg equiv" : c.load_type === "Dumbbell plates" ? "kg each" : "kg";
-  return `<article class="card ${done ? "done" : ""}" data-i="${i}" data-exercise="${esc(c.exercise)}" data-sets="${n}">
+  return `<article class="card ${done ? "done" : ""} ${lg ? "logged" : ""}" data-i="${i}" data-exercise="${esc(c.exercise)}" data-sets="${n}">
     <div class="card-head">
       <span class="pos">${pos}</span>
       <div class="card-title">${title}
         <div class="meta">${esc(c.equipment)} · ${c.sets} × ${num(c.rep_low)}–${num(c.rep_high)}${c.substituted ? ` · <span title="Main kit is switched off">instead of ${esc(c.original)}</span>` : ""}</div>
       </div>
-      ${pill(c.verdict)}
+      ${lg ? pill(lg.pending ? "queued" : "increase", lg.pending ? "Queued" : "✓ Logged") : pill(c.verdict)}
     </div>
     <div class="load">
-      <div><div class="sublabel">Load today</div><div class="load-main">${esc(main)}</div><div class="load-detail">${esc(detail)}</div></div>
+      <div><div class="sublabel">${lg ? "Target was" : "Load today"}</div><div class="load-main">${esc(main)}</div><div class="load-detail">${esc(detail)}</div></div>
       <div><div class="sublabel">History</div><div class="last">${last}</div></div>
     </div>
     ${changes.length ? `<div class="swap"><span class="sublabel">Plates before this exercise</span>${changes.map((x) => `<div class="${x.startsWith("Sleeve now") ? "sleeve" : ""}">${esc(x)}</div>`).join("")}</div>` : ""}
-    <div class="instr" title="${esc(c.instruction)}">${esc(coachLine(c))}</div>
+    <div class="instr" title="${esc(lg ? lg.decision : c.instruction)}">${lg ? `<b>Next time:</b> ${esc(nextLine(lg.decision))}` : esc(coachLine(c))}</div>
     <div class="entry">
-      ${bw ? "" : `<label>Weight<input class="wt" type="number" step="0.5" min="0" inputmode="decimal" data-k="weight" value="${esc(num(weight))}"></label><span class="unit">${unit}</span><span class="gap"></span>`}
-      ${Array.from({ length: n }, (_, k) => `<label>Set ${k + 1}<input type="number" min="0" step="1" inputmode="numeric" data-k="set" data-s="${k}" placeholder="" value="${esc(sets[k] ?? "")}"></label>`).join("")}
-      <button class="copy-btn" type="button" title="Fill every set with the top of the range">All ${num(c.rep_high)}</button>
+      ${bw ? "" : `<label>Weight<input class="wt" type="number" step="0.5" min="0" inputmode="decimal" data-k="weight" value="${esc(num(weight))}" ${ro}></label><span class="unit">${unit}</span><span class="gap"></span>`}
+      ${Array.from({ length: n }, (_, k) => `<label>Set ${k + 1}<input type="number" min="0" step="1" inputmode="numeric" data-k="set" data-s="${k}" placeholder="" value="${esc(sets[k] ?? "")}" ${ro}></label>`).join("")}
+      ${lg ? "" : `<button class="copy-btn" type="button" title="Fill every set with the top of the range">All ${num(c.rep_high)}</button>`}
     </div>
   </article>`;
 }
@@ -290,17 +300,20 @@ function saveBar() {
 }
 
 function updateSaveBar() {
-  const done = $$(".card.done").length;
+  const done = $$(".card.done:not(.logged)").length;
+  const logged = $$(".card.logged").length;
   const total = $$(".card").length;
   const snap = S.view.status.mode === "snapshot";
-  $("#save-count").textContent = total ? `${done} of ${total} exercises filled in` : "No exercises in this session";
+  $("#save-count").textContent = !total ? "No exercises in this session"
+    : logged === total ? `All ${total} exercises logged for ${fmtDate(S.logDate)}`
+    : `${logged} of ${total} logged${done ? ` · ${done} ready to save` : ""}`;
   const b = $("#save");
   b.disabled = !done || S.busy;
   b.textContent = snap ? `Queue ${done || ""} (snapshot mode)` : `Save ${done || ""} to sheet`;
 }
 
 async function saveSession() {
-  const entries = $$(".card.done").map((cardEl) => {
+  const entries = $$(".card.done:not(.logged)").map((cardEl) => {
     const r = readCard(cardEl);
     return {
       date: S.logDate,

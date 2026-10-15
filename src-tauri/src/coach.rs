@@ -201,9 +201,25 @@ pub struct Card {
     pub trend: String,
     pub verdict: Verdict,
     pub instruction: String,
+    /// What was logged for this exercise on the card's date, if anything.
+    pub logged: Option<Logged>,
 }
 
-pub fn session_cards(data: &Data, engine: &Engine, analysis: &[Analysis], session: &str) -> (Vec<Card>, Vec<String>) {
+#[derive(Debug, Clone, Serialize)]
+pub struct Logged {
+    pub weight: f64,
+    pub sets: [Option<f64>; 4],
+    pub decision: String,
+    pub verdict: Verdict,
+    /// Still queued on this computer, not yet in the sheet.
+    pub pending: bool,
+}
+
+/// Cards for one session on `date`. The targets come from sessions before
+/// `date`, so they stay put while you log the day's exercises one by one;
+/// anything already logged on `date` is attached as `logged`. Pass a date
+/// after the last entry to use the whole log (the Dashboard's behaviour).
+pub fn session_cards(data: &Data, engine: &Engine, analysis: &[Analysis], session: &str, date: NaiveDate) -> (Vec<Card>, Vec<String>) {
     let mut cards = Vec::new();
     let mut skipped = Vec::new();
     for p in data.programme.iter().filter(|p| p.workout == session) {
@@ -218,7 +234,14 @@ pub fn session_cards(data: &Data, engine: &Engine, analysis: &[Analysis], sessio
             continue;
         };
         let load_type = engine.load_type(equipment);
-        let last = data.log.iter().rposition(|e| &e.exercise == exercise);
+        let last = data.log.iter().rposition(|e| &e.exercise == exercise && e.date < date);
+        let logged = data.log.iter().rposition(|e| &e.exercise == exercise && e.date == date).map(|i| Logged {
+            weight: data.log[i].weight,
+            sets: data.log[i].sets,
+            decision: analysis[i].decision.clone(),
+            verdict: analysis[i].verdict,
+            pending: data.log[i].row.is_none(),
+        });
         let (recommended, recommended_kg, previous_weight, previous_reps, previous_date, trend, verdict, instruction) = match last {
             None => {
                 let range = format!("{}–{}", fmt_num(p.rep_low), fmt_num(p.rep_high));
@@ -274,6 +297,7 @@ pub fn session_cards(data: &Data, engine: &Engine, analysis: &[Analysis], sessio
             trend,
             verdict,
             instruction,
+            logged,
         });
     }
     (cards, skipped)
