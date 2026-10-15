@@ -1,5 +1,7 @@
 pub mod coach;
 pub mod engine;
+#[cfg(target_os = "linux")]
+mod linux;
 pub mod model;
 pub mod plan;
 pub mod sheets;
@@ -384,6 +386,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            #[cfg(target_os = "linux")]
+            linux::integrate_appimage();
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             let config: Config = read_json(&dir.join("config.json")).unwrap_or_default();

@@ -595,8 +595,12 @@ function renderSettings(el) {
   $$('input[name="mode"]', el).forEach((r) => r.addEventListener("change", showMode));
   showMode();
   $$("[data-browse]", el).forEach((b) => b.addEventListener("click", async () => {
-    const f = await T.dialog.open({ multiple: false, filters: [{ name: b.dataset.ext, extensions: [b.dataset.ext] }] });
-    if (f) $("#" + b.dataset.browse).value = f;
+    try {
+      const f = await T.dialog.open({ multiple: false, filters: [{ name: b.dataset.ext, extensions: [b.dataset.ext] }] });
+      if (f) $("#" + b.dataset.browse).value = f;
+    } catch (e) {
+      toast(`Couldn't open the file picker: ${e}. Paste the file's path into the box instead.`);
+    }
   }));
   $("#save-config").addEventListener("click", async () => {
     setBusy(true);
