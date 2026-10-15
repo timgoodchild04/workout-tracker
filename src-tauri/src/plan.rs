@@ -4,8 +4,11 @@
 //! sit on a sleeve as a stack: to reach a plate you first take off everything
 //! outside it. So the order plates go on matters as much as which plates.
 //! Every plate on or off counts as one move: x2 per change on the bar (both
-//! sides) and x4 on the dumbbells (both ends of both handles). You start with
-//! everything on the rack.
+//! sides) and x4 on the dumbbells (both ends of both handles).
+//!
+//! Plates stay on between sessions. So a session starts from whatever the
+//! previous one left on the bar and dumbbells, worked out by replaying the log
+//! (`kit_before`). The log is shared, so every computer gets the same answer.
 //!
 //! For each exercise the planner picks how to stack the plates (any order is
 //! allowed), searching every arrangement across the whole session, so plates
@@ -18,7 +21,9 @@
 //! - the first plate-loaded exercise is the session's main lift and stays first;
 //! - compound slots stay compound and isolation slots stay isolation.
 
-use crate::coach::Card;
+use crate::coach::{Analysis, Card};
+use crate::model::Data;
+use chrono::NaiveDate;
 use crate::engine::{fmt_num, Engine, BARBELL, DUMBBELL, SIZES};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -141,13 +146,13 @@ struct Step {
     stripped: Stack, // taken off the other implement, outermost first
 }
 
-type State = [Stack; 2];
+pub type State = [Stack; 2];
 
 /// Best stacking for a fixed exercise order: dynamic programming over what's
 /// on the bar and the dumbbells after each exercise.
-fn best_stacking(order: &[usize], needs: &[Option<Need>], pool: [u32; 4], arr: &HashMap<usize, Vec<Stack>>) -> (Cost, Vec<Step>) {
+fn best_stacking(order: &[usize], needs: &[Option<Need>], pool: [u32; 4], arr: &HashMap<usize, Vec<Stack>>, start: &State) -> (Cost, Vec<Step>, State) {
     // Each layer: (state, cost, index of parent in previous layer, step taken)
-    let mut layers: Vec<Vec<(State, Cost, usize, Option<Step>)>> = vec![vec![([vec![], vec![]], (0, 0), 0, None)]];
+    let mut layers: Vec<Vec<(State, Cost, usize, Option<Step>)>> = vec![vec![(start.clone(), (0, 0), 0, None)]];
     for &ci in order {
         let Some(need) = needs[ci] else { continue };
         let me = need.imp;
@@ -176,10 +181,15 @@ fn best_stacking(order: &[usize], needs: &[Option<Need>], pool: [u32; 4], arr: &
                 }
             }
         }
-        layers.push(next.into_iter().map(|(s, (c, p, st))| (s, c, p, Some(st))).collect());
+        // Sorted so ties always resolve the same way: the log replay has to
+        // reproduce exactly the plan that was shown on the day.
+        let mut layer: Vec<_> = next.into_iter().map(|(s, (c, p, st))| (s, c, p, Some(st))).collect();
+        layer.sort_by(|a, b| a.0.cmp(&b.0));
+        layers.push(layer);
     }
     let last = layers.last().unwrap();
-    let (mut idx, cost) = last.iter().enumerate().min_by_key(|(_, l)| l.1).map(|(i, l)| (i, l.1)).unwrap();
+    let (mut idx, cost) = last.iter().enumerate().min_by(|a, b| a.1 .1.cmp(&b.1 .1).then(a.1 .0.cmp(&b.1 .0))).map(|(i, l)| (i, l.1)).unwrap();
+    let end = last[idx].0.clone();
     let mut steps = Vec::new();
     for li in (1..layers.len()).rev() {
         let (_, _, parent, step) = &layers[li][idx];
@@ -187,12 +197,12 @@ fn best_stacking(order: &[usize], needs: &[Option<Need>], pool: [u32; 4], arr: &
         idx = *parent;
     }
     steps.reverse();
-    (cost, steps)
+    (cost, steps, end)
 }
 
 /// The usual way: keep whatever inner plates still fit, add the rest heaviest first.
-fn naive_moves(order: &[usize], needs: &[Option<Need>], pool: [u32; 4]) -> u32 {
-    let mut state: State = [vec![], vec![]];
+fn naive_moves(order: &[usize], needs: &[Option<Need>], pool: [u32; 4], start: &State) -> u32 {
+    let mut state: State = start.clone();
     let mut moves = 0;
     for &ci in order {
         let Some(need) = needs[ci] else { continue };
@@ -262,13 +272,13 @@ fn permutations(items: &[usize]) -> Vec<Vec<usize>> {
 }
 
 /// (as programmed, fewest plate moves). Both use the best stacking for their order.
-pub fn plans(cards: &[Card], engine: &Engine) -> (Plan, Plan) {
+pub fn plans(cards: &[Card], engine: &Engine, start: &State) -> (Plan, Plan) {
     let needs = needs(cards, engine);
     let pool = engine.pool();
     let arr: HashMap<usize, Vec<Stack>> = needs.iter().enumerate().filter_map(|(i, n)| n.map(|n| (i, arrangements(&n.n)))).collect();
     let make = |order: Vec<usize>| {
-        let (cost, steps) = best_stacking(&order, &needs, pool, &arr);
-        Plan { naive_moves: naive_moves(&order, &needs, pool), moves: cost.0, changes: describe(&steps, cards.len()), order }
+        let (cost, steps, _) = best_stacking(&order, &needs, pool, &arr, start);
+        Plan { naive_moves: naive_moves(&order, &needs, pool, start), moves: cost.0, changes: describe(&steps, cards.len()), order }
     };
     let programme: Vec<usize> = (0..cards.len()).collect();
 
@@ -299,7 +309,7 @@ pub fn plans(cards: &[Card], engine: &Engine) -> (Plan, Plan) {
                     }
                 })
                 .collect();
-            let (cost, _) = best_stacking(&order, &needs, pool, &arr);
+            let (cost, _, _) = best_stacking(&order, &needs, pool, &arr, start);
             let shift: usize = order.iter().enumerate().map(|(pos, &ci)| pos.abs_diff(ci)).sum();
             let key = (cost.0, shift, cost.1);
             if best.as_ref().is_none_or(|(k, _)| key < *k) {
@@ -309,4 +319,55 @@ pub fn plans(cards: &[Card], engine: &Engine) -> (Plan, Plan) {
     }
     let best = best.map(|b| b.1).unwrap_or_else(|| programme.clone());
     (make(programme), make(best))
+}
+
+/// What's on the kit, for display: plate weights inside → out.
+#[derive(Debug, Clone, Serialize)]
+pub struct Kit {
+    /// Date of the session that left the plates on (None = nothing logged yet).
+    pub from: Option<NaiveDate>,
+    pub bar: Vec<f64>,
+    pub dumbbells: Vec<f64>,
+}
+
+impl Kit {
+    pub fn new(state: &State, from: Option<NaiveDate>) -> Kit {
+        let kg = |s: &Stack| s.iter().map(|&i| SIZES[i as usize]).collect();
+        Kit { from, bar: kg(&state[0]), dumbbells: kg(&state[1]) }
+    }
+}
+
+/// What's on the bar and dumbbells before `date`: replay every logged session
+/// before it, in the order the exercises were logged, at the weights actually
+/// used, with the same planner the Today screen uses.
+pub fn kit_before(data: &Data, analysis: &[Analysis], engine: &Engine, date: NaiveDate) -> (State, Option<NaiveDate>) {
+    let pool = engine.pool();
+    let mut days: Vec<NaiveDate> = data.log.iter().map(|e| e.date).filter(|d| *d < date).collect();
+    days.sort();
+    days.dedup();
+    let mut state: State = [vec![], vec![]];
+    let mut from = None;
+    for day in days {
+        let idx: Vec<usize> = (0..data.log.len()).filter(|&i| data.log[i].date == day).collect();
+        let needs: Vec<Option<Need>> = idx
+            .iter()
+            .map(|&i| {
+                let lt = analysis[i].load_type.as_str();
+                let imp = match lt {
+                    BARBELL => 0,
+                    DUMBBELL => 1,
+                    _ => return None,
+                };
+                engine.plates_for(lt, data.log[i].weight).map(|n| Need { imp, n })
+            })
+            .collect();
+        if needs.iter().all(|n| n.is_none()) {
+            continue;
+        }
+        let arr: HashMap<usize, Vec<Stack>> = needs.iter().enumerate().filter_map(|(i, n)| n.map(|n| (i, arrangements(&n.n)))).collect();
+        let order: Vec<usize> = (0..idx.len()).collect();
+        state = best_stacking(&order, &needs, pool, &arr, &state).2;
+        from = Some(day);
+    }
+    (state, from)
 }

@@ -186,6 +186,12 @@ function renderToday(el) {
         <button class="${plan === pp ? "on" : ""}" data-order="programme">As programmed · ${pp.moves} plate moves</button>
         <button class="${plan === bp ? "on" : ""}" data-order="best">Fewest plate changes · ${bp.moves} (saves ${saves})</button></div>`
     : `<span class="small muted">${pp.moves ? `This order already needs the fewest plate changes (${pp.moves} moves).` : ""}</span>`;
+  const kit = v.kit;
+  const kgList = (a) => (a.length ? a.map((x) => num(x) + "kg").join(", ") : "nothing");
+  const kitNote = kit && (kit.bar.length || kit.dumbbells.length)
+    ? `<div class="kit"><span class="sublabel">On your kit now${kit.from ? `, left from ${esc(fmtDate(kit.from))}` : ""} (inside → out)</span>
+        <div>Bar, each side: <b>${esc(kgList(kit.bar))}</b></div>
+        <div>Dumbbells, each end: <b>${esc(kgList(kit.dumbbells))}</b></div></div>` : "";
   const stackNote = plan && plan.naive_moves > plan.moves
     ? `<p class="small muted">Loading the plates in the order shown takes ${plan.moves} plate moves this session. Loading heaviest plate first would take ${plan.naive_moves}.</p>` : "";
   const toolbar = `<div class="toolbar">
@@ -197,7 +203,7 @@ function renderToday(el) {
   const order = plan ? plan.order : sv.cards.map((_, i) => i);
   const cards = order.map((i, pos) => card(sv.cards[i], i, draft[sv.cards[i].exercise], pos + 1, plan?.changes[i] || [])).join("");
 
-  el.innerHTML = head + chips + off + rest + toolbar + stackNote + `<div class="cards">${cards}</div>` + saveBar();
+  el.innerHTML = head + chips + off + rest + toolbar + kitNote + stackNote + `<div class="cards">${cards}</div>` + saveBar();
 
   $$(".chip", el).forEach((b) => b.addEventListener("click", () => { S.session = b.dataset.session; render(); }));
   $("#back-to-schedule")?.addEventListener("click", (e) => { e.preventDefault(); S.session = null; render(); });

@@ -98,7 +98,10 @@ fn plate_plans() {
     let a = coach::analyse(&data, &engine);
     for s in coach::sessions(&data) {
         let (cards, _) = coach::session_cards(&data, &engine, &a, &s);
-        let (p, b) = workout_tracker_lib::plan::plans(&cards, &engine);
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        let (start, from) = workout_tracker_lib::plan::kit_before(&data, &a, &engine, today);
+        eprintln!("\nkit before {today} (from {from:?}): {:?}", workout_tracker_lib::plan::Kit::new(&start, from));
+        let (p, b) = workout_tracker_lib::plan::plans(&cards, &engine, &start);
         assert!(b.moves <= p.moves);
         eprintln!("\n{s}: programme {} moves (heaviest-first loading {}), best {} moves (heaviest-first {})", p.moves, p.naive_moves, b.moves, b.naive_moves);
         assert!(p.moves <= p.naive_moves);

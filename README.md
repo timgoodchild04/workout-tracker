@@ -16,6 +16,11 @@ sessions into it, and the sheet keeps working on its own exactly as before.
 
 ### Exercise order and plate stacking
 
+Plates stay on between sessions. Each session starts from what the previous one left on the bar and
+dumbbells, worked out by replaying the log (the weights you actually used, in the order you logged
+them). Because it comes from the shared sheet, every computer gets the same answer. The Today screen
+shows what should be on the kit before you start.
+
 Plates sit on a sleeve as a stack, so the order you load them decides how many come off at the next
 change. The Today screen plans both the exercise order and the stacking order for the whole session,
 with the bar and dumbbells sharing one pool of plates. Each card says what to take off (outermost

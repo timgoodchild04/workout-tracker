@@ -76,6 +76,7 @@ pub struct SessionView {
     best_plan: plan::Plan,
 }
 
+
 #[derive(Serialize)]
 pub struct HistRow {
     date: NaiveDate,
@@ -108,6 +109,8 @@ pub struct View {
     status: Status,
     config: Config,
     today: Option<Today>,
+    /// What the last session left on the bar and dumbbells.
+    kit: Option<plan::Kit>,
     sessions: Vec<SessionView>,
     history: Vec<HistRow>,
     progress: Vec<ProgressRow>,
@@ -133,6 +136,7 @@ fn build_view(s: &Inner) -> View {
         },
         config: s.config.clone(),
         today: None,
+        kit: None,
         sessions: vec![],
         history: vec![],
         progress: vec![],
@@ -147,12 +151,16 @@ fn build_view(s: &Inner) -> View {
 
     let last_row = base.log.iter().filter_map(|e| e.row).max().unwrap_or(model::LOG_FIRST_ROW - 1);
     view.status.rows_left = Some(model::LOG_LAST_FORMULA_ROW as i64 - last_row as i64 - s.pending.len() as i64);
-    view.today = Some(coach::today(&data.schedule, Local::now().date_naive()));
+    let today = Local::now().date_naive();
+    view.today = Some(coach::today(&data.schedule, today));
+    // Plates stay on between sessions: start today from where the last one ended.
+    let (start, from) = plan::kit_before(&data, &analysis, &engine, today);
+    view.kit = Some(plan::Kit::new(&start, from));
     view.sessions = coach::sessions(&data)
         .into_iter()
         .map(|name| {
             let (cards, skipped) = coach::session_cards(&data, &engine, &analysis, &name);
-            let (programme_plan, best_plan) = plan::plans(&cards, &engine);
+            let (programme_plan, best_plan) = plan::plans(&cards, &engine, &start);
             SessionView { name, cards, skipped, programme_plan, best_plan }
         })
         .collect();
