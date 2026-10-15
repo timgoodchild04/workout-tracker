@@ -134,9 +134,12 @@ To publish a release:
 
 1. Bump `version` in `src-tauri/tauri.conf.json` (and `Cargo.toml`, `package.json`).
 2. Commit, then tag and push: `git tag v0.3.0 && git push origin main v0.3.0`.
-3. The **Release** workflow builds a universal macOS app, an Ubuntu AppImage + .deb and a
-   Windows installer (`-setup.exe`), signs the updates and publishes the release with
-   `latest.json`. Nothing needs building locally.
+3. The **Release** workflow creates a draft release, builds a universal macOS app, an Ubuntu
+   AppImage + .deb and a Windows installer (`-setup.exe`) **at the same time** into it, then
+   `.github/scripts/publish_release.py` writes `latest.json` from their signatures and
+   publishes the draft. It refuses to publish unless all three platforms are there, so the
+   updater never sees a half-built release. Nothing needs building locally. About 10 minutes.
+   To check the builds without releasing: Actions → Release → Run workflow.
 
 On Windows the installer isn't code-signed, so SmartScreen warns on the first install
 (More info → Run anyway). Updates after that install from inside the app.

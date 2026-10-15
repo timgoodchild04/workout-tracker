@@ -1,21 +1,50 @@
-# Push a tag like v0.3.0 (matching "version" in src-tauri/tauri.conf.json) to publish a release.
-# Builds a universal macOS app, an Ubuntu AppImage + .deb and a Windows installer, signs the updates with the
-# updater key, and uploads them plus latest.json, which the app's "Check for updates" reads.
+# Push a tag like v0.5.0 (matching "version" in src-tauri/tauri.conf.json) to publish a release.
+# The three platforms build at the same time into a draft release; once all three are
+# there, publish_release.py writes latest.json (what the in-app updater reads) from their
+# signatures and publishes the draft. Updaters never see a release missing a platform.
+# Run it by hand (Actions → Release → Run workflow) to build all three without releasing.
 name: Release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.draft.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches app version
+        if: github.event_name == 'push'
+        run: |
+          v=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "v$v" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match tauri.conf.json version $v"
+            exit 1
+          fi
+
+      - name: Draft release
+        id: draft
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          body="macOS: Workout Tracker.app (universal). Windows: the -setup.exe installer. Ubuntu: the .AppImage updates itself from inside the app; the .deb installs normally but updates by downloading the next .deb.
+          Already installed? Use Settings → Updates in the app."
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" -f tag_name="$GITHUB_REF_NAME" -f name="Workout Tracker $GITHUB_REF_NAME" -f body="$body" -F draft=true -q .id)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: prepare
     strategy:
       fail-fast: false
-      # One at a time: each platform adds its entry to the same latest.json.
-      max-parallel: 1
       matrix:
         include:
           - os: macos-latest
@@ -32,15 +61,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Tag matches app version
-        shell: bash
-        run: |
-          v=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          if [ "v$v" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME doesn't match tauri.conf.json version $v"
-            exit 1
-          fi
 
       - name: Linux build dependencies
         if: runner.os == 'Linux'
@@ -63,16 +83,25 @@ jobs:
 
       - run: npm ci
 
+      # With no release id (a manual run) this only builds.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: Workout Tracker ${{ github.ref_name }}
-          releaseBody: |
-            macOS: Workout Tracker.app (universal). Windows: the -setup.exe installer. Ubuntu: the .AppImage updates itself from inside the app; the .deb installs normally but updates by downloading the next .deb.
-            Already installed? Use Settings → Updates in the app.
-          releaseDraft: false
+          releaseId: ${{ needs.prepare.outputs.release_id }}
+          includeUpdaterJson: false
           args: ${{ matrix.args }}
+
+  publish:
+    needs: [prepare, build]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write latest.json and publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/publish_release.py "$GITHUB_REPOSITORY" "${{ needs.prepare.outputs.release_id }}"
