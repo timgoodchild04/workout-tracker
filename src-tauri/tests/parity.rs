@@ -99,9 +99,14 @@ fn plate_plans() {
     for s in coach::sessions(&data) {
         let (cards, _) = coach::session_cards(&data, &engine, &a, &s, chrono::NaiveDate::from_ymd_opt(2026, 10, 15).unwrap());
         let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
-        let (start, from) = workout_tracker_lib::plan::kit_before(&data, &a, &engine, today);
-        eprintln!("\nkit before {today} (from {from:?}): {:?}", workout_tracker_lib::plan::Kit::new(&start, from));
-        let (p, b) = workout_tracker_lib::plan::plans(&cards, &engine, &start);
+        let (start, from) = workout_tracker_lib::plan::kit_through(&data, &a, &engine, today);
+        eprintln!("\nkit through {today} (from {from:?}): {:?}", workout_tracker_lib::plan::Kit::new(&start, from));
+        let (p, b) = workout_tracker_lib::plan::plans_remaining(&cards, &engine, &start);
+        // Logged exercises come first with nothing to change.
+        let done = cards.iter().filter(|c| c.logged.is_some()).count();
+        for &i in &b.order[..done] {
+            assert!(cards[i].logged.is_some() && b.changes[i].is_empty(), "{s}: logged {} should be first, unchanged", cards[i].exercise);
+        }
         assert!(b.moves <= p.moves);
         eprintln!("\n{s}: programme {} moves (heaviest-first loading {}), best {} moves (heaviest-first {})", p.moves, p.naive_moves, b.moves, b.naive_moves);
         assert!(p.moves <= p.naive_moves);
@@ -120,4 +125,47 @@ fn schedule_morning_sessions_exist() {
         assert!(d.morning.is_empty() || sessions.contains(&d.morning), "{}: {} isn't a session on 💪 Workouts", d.day, d.morning);
     }
     eprintln!("morning: {:?}", data.schedule.iter().map(|d| d.morning.as_str()).collect::<Vec<_>>());
+}
+
+/// After every logged day, the bar and the dumbbells hold exactly the plates of the most
+/// recent exercise that used them (up to and including that day), and the kit says which
+/// day left them on.
+#[test]
+fn kit_matches_latest_logged_load() {
+    use workout_tracker_lib::engine::{BARBELL, DUMBBELL};
+    let Ok(path) = std::env::var("WT_SNAPSHOT") else { return };
+    let data = snapshot::load(std::path::Path::new(&path)).unwrap();
+    let engine = Engine::new(&data.settings);
+    let a = coach::analyse(&data, &engine);
+    let mut days: Vec<_> = data.log.iter().map(|e| e.date).collect();
+    days.sort();
+    days.dedup();
+    for &day in &days {
+        let (state, from) = workout_tracker_lib::plan::kit_through(&data, &a, &engine, day);
+        let plate_day = (0..data.log.len())
+            .filter(|&i| data.log[i].date <= day && [BARBELL, DUMBBELL].contains(&a[i].load_type.as_str()))
+            .map(|i| data.log[i].date)
+            .max();
+        assert_eq!(from, plate_day, "{day}: kit should be left from the latest plate-loaded day");
+        for (imp, lt) in [(0, BARBELL), (1, DUMBBELL)] {
+            // Latest entry for this implement: last day first, then the last one logged that day.
+            let last = (0..data.log.len())
+                .filter(|&i| data.log[i].date <= day && a[i].load_type == lt)
+                .max_by_key(|&i| (data.log[i].date, i));
+            let want = last.and_then(|i| engine.plates_for(lt, data.log[i].weight)).unwrap_or([0; 4]);
+            let mut got = [0u32; 4];
+            for &p in &state[imp] {
+                got[p as usize] += 1;
+            }
+            // Plates are shared: a later exercise on the other implement may have taken some
+            // off. So this implement holds its latest load, minus only what was taken.
+            let taken_later = last.is_some_and(|li| {
+                (0..data.log.len()).any(|j| data.log[j].date <= day && (data.log[j].date, j) > (data.log[li].date, li) && a[j].load_type != lt && [BARBELL, DUMBBELL].contains(&a[j].load_type.as_str()))
+            });
+            let ok = if taken_later { (0..4).all(|k| got[k] <= want[k]) } else { got == want };
+            assert!(ok, "{day} {lt}: kit {got:?} should be {want:?}{} for {:?}", if taken_later { " or fewer" } else { "" }, last.map(|i| (&data.log[i].exercise, data.log[i].weight)));
+        }
+    }
+    let (state, from) = workout_tracker_lib::plan::kit_through(&data, &a, &engine, *days.last().unwrap());
+    eprintln!("{} days checked; kit now (from {from:?}): {:?}", days.len(), workout_tracker_lib::plan::Kit::new(&state, from));
 }

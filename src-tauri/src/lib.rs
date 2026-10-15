@@ -160,14 +160,15 @@ fn build_view(s: &Inner) -> View {
     let today = Local::now().date_naive();
     let date = s.view_date.unwrap_or(today);
     view.today = Some(coach::today(&data.schedule, today));
-    // Plates stay on between sessions: start from where the last one before this date ended.
-    let (start, from) = plan::kit_before(&data, &analysis, &engine, date);
+    // Plates stay on between sessions: start from what's on the kit now, including
+    // anything already logged on this date.
+    let (start, from) = plan::kit_through(&data, &analysis, &engine, date);
     view.kit = Some(plan::Kit::new(&start, from));
     view.sessions = coach::sessions(&data)
         .into_iter()
         .map(|name| {
             let (cards, skipped) = coach::session_cards(&data, &engine, &analysis, &name, date);
-            let (programme_plan, best_plan) = plan::plans(&cards, &engine, &start);
+            let (programme_plan, best_plan) = plan::plans_remaining(&cards, &engine, &start);
             let switched_off = data.programme.iter().filter(|p| p.workout == name && !p.enabled).map(|p| p.exercise.clone()).collect();
             SessionView { name, cards, skipped, switched_off, programme_plan, best_plan }
         })
@@ -350,11 +351,13 @@ fn clean_path(raw: &str) -> String {
 mod tests {
     #[test]
     fn clean_path_handles_pasted_forms() {
-        let home = std::env::var("HOME").unwrap();
         assert_eq!(super::clean_path("  '/a/b c.json' "), "/a/b c.json");
         assert_eq!(super::clean_path("file:///a/b%20c.json"), "/a/b c.json");
-        assert_eq!(super::clean_path("~/keys/k.json"), format!("{home}/keys/k.json"));
         assert_eq!(super::clean_path("\"/x.json\""), "/x.json");
+        // Windows has no HOME (and no ~ paths), so only check the expansion where it applies.
+        if let Ok(home) = std::env::var("HOME") {
+            assert_eq!(super::clean_path("~/keys/k.json"), format!("{home}/keys/k.json"));
+        }
     }
 }
 

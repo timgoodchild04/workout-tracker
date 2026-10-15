@@ -6,9 +6,10 @@
 //! Every plate on or off counts as one move: x2 per change on the bar (both
 //! sides) and x4 on the dumbbells (both ends of both handles).
 //!
-//! Plates stay on between sessions. So a session starts from whatever the
-//! previous one left on the bar and dumbbells, worked out by replaying the log
-//! (`kit_before`). The log is shared, so every computer gets the same answer.
+//! Plates stay on between sessions. So a session starts from whatever is on the
+//! bar and dumbbells now, worked out by replaying the log up to and including
+//! the day being viewed (`kit_through`), so exercises already logged today
+//! count. The log is shared, so every computer gets the same answer.
 //!
 //! For each exercise the planner picks how to stack the plates (any order is
 //! allowed), searching every arrangement across the whole session, so plates
@@ -272,6 +273,28 @@ fn permutations(items: &[usize]) -> Vec<Vec<usize>> {
 }
 
 /// (as programmed, fewest plate moves). Both use the best stacking for their order.
+/// Plans for a session that may be partly logged already. Logged exercises are done:
+/// they stay first, in programme order, with nothing to change. The rest are planned
+/// from `start`, which already includes what the logged ones left on the kit.
+pub fn plans_remaining(cards: &[Card], engine: &Engine, start: &State) -> (Plan, Plan) {
+    let todo: Vec<usize> = (0..cards.len()).filter(|&i| cards[i].logged.is_none()).collect();
+    if todo.len() == cards.len() {
+        return plans(cards, engine, start);
+    }
+    let done: Vec<usize> = (0..cards.len()).filter(|&i| cards[i].logged.is_some()).collect();
+    let sub: Vec<Card> = todo.iter().map(|&i| cards[i].clone()).collect();
+    let widen = |p: Plan| {
+        let mut changes = vec![Vec::new(); cards.len()];
+        for (j, c) in p.changes.into_iter().enumerate() {
+            changes[todo[j]] = c;
+        }
+        let order = done.iter().copied().chain(p.order.into_iter().map(|j| todo[j])).collect();
+        Plan { order, moves: p.moves, naive_moves: p.naive_moves, changes }
+    };
+    let (programme, best) = plans(&sub, engine, start);
+    (widen(programme), widen(best))
+}
+
 pub fn plans(cards: &[Card], engine: &Engine, start: &State) -> (Plan, Plan) {
     let needs = needs(cards, engine);
     let pool = engine.pool();
@@ -337,12 +360,13 @@ impl Kit {
     }
 }
 
-/// What's on the bar and dumbbells before `date`: replay every logged session
-/// before it, in the order the exercises were logged, at the weights actually
-/// used, with the same planner the Today screen uses.
-pub fn kit_before(data: &Data, analysis: &[Analysis], engine: &Engine, date: NaiveDate) -> (State, Option<NaiveDate>) {
+/// What's on the bar and dumbbells after everything logged up to and including
+/// `date`: replay each logged session in the order the exercises were logged, at
+/// the weights actually used, with the same planner the Today screen uses. The
+/// date returned is the last session that touched the plates.
+pub fn kit_through(data: &Data, analysis: &[Analysis], engine: &Engine, date: NaiveDate) -> (State, Option<NaiveDate>) {
     let pool = engine.pool();
-    let mut days: Vec<NaiveDate> = data.log.iter().map(|e| e.date).filter(|d| *d < date).collect();
+    let mut days: Vec<NaiveDate> = data.log.iter().map(|e| e.date).filter(|d| *d <= date).collect();
     days.sort();
     days.dedup();
     let mut state: State = [vec![], vec![]];

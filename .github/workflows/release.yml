@@ -1,5 +1,5 @@
 # Push a tag like v0.3.0 (matching "version" in src-tauri/tauri.conf.json) to publish a release.
-# Builds a universal macOS app and an Ubuntu AppImage + .deb, signs the updates with the
+# Builds a universal macOS app, an Ubuntu AppImage + .deb and a Windows installer, signs the updates with the
 # updater key, and uploads them plus latest.json, which the app's "Check for updates" reads.
 name: Release
 
@@ -25,11 +25,16 @@ jobs:
           - os: ubuntu-22.04
             rust_targets: ""
             args: --bundles appimage,deb
+          # NSIS installs per user (no admin prompt) and is what the updater runs on Windows.
+          - os: windows-latest
+            rust_targets: ""
+            args: --bundles nsis
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Tag matches app version
+        shell: bash
         run: |
           v=$(node -p "require('./src-tauri/tauri.conf.json').version")
           if [ "v$v" != "$GITHUB_REF_NAME" ]; then
@@ -67,7 +72,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: Workout Tracker ${{ github.ref_name }}
           releaseBody: |
-            macOS: Workout Tracker.app (universal). Ubuntu: the .AppImage updates itself from inside the app; the .deb installs normally but updates by downloading the next .deb.
+            macOS: Workout Tracker.app (universal). Windows: the -setup.exe installer. Ubuntu: the .AppImage updates itself from inside the app; the .deb installs normally but updates by downloading the next .deb.
             Already installed? Use Settings → Updates in the app.
           releaseDraft: false
           args: ${{ matrix.args }}

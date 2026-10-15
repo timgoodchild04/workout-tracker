@@ -23,10 +23,11 @@ session. The header shows whether Morning is done. Pick any session chip to over
 
 ### Exercise order and plate stacking
 
-Plates stay on between sessions. Each session starts from what the previous one left on the bar and
-dumbbells, worked out by replaying the log (the weights you actually used, in the order you logged
-them). Because it comes from the shared sheet, every computer gets the same answer. The Today screen
-shows what should be on the kit before you start.
+Plates stay on between sessions. The Today screen starts from what's on the bar and dumbbells now,
+worked out by replaying the log up to and including the day you're viewing (the weights you actually
+used, in the order you logged them), so exercises already logged today count. If part of a session
+is logged, those exercises stay at the top and only the rest are planned. Because it comes from the
+shared sheet, every computer gets the same answer.
 
 Plates sit on a sleeve as a stack, so the order you load them decides how many come off at the next
 change. The Today screen plans both the exercise order and the stacking order for the whole session,
@@ -74,8 +75,12 @@ To publish a release:
 
 1. Bump `version` in `src-tauri/tauri.conf.json` (and `Cargo.toml`, `package.json`).
 2. Commit, then tag and push: `git tag v0.3.0 && git push origin main v0.3.0`.
-3. The **Release** workflow builds a universal macOS app and an Ubuntu AppImage + .deb, signs
-   the updates and publishes the release with `latest.json`. Nothing needs building locally.
+3. The **Release** workflow builds a universal macOS app, an Ubuntu AppImage + .deb and a
+   Windows installer (`-setup.exe`), signs the updates and publishes the release with
+   `latest.json`. Nothing needs building locally.
+
+On Windows the installer isn't code-signed, so SmartScreen warns on the first install
+(More info → Run anyway). Updates after that install from inside the app.
 
 On Ubuntu, only the **AppImage** can update itself (`chmod +x` it and run it). A `.deb` install
 still checks for updates but links to the release page to download the next `.deb`.
