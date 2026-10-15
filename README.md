@@ -105,7 +105,10 @@ and no token that runs out every week.
 2. Enable the **Google Sheets API**.
 3. Under **Service accounts**, create one (no roles needed), then go to **Keys → Add key → JSON**.
 4. Share the sheet with the service account's email (`…@….iam.gserviceaccount.com`) as **Editor**.
-5. In the app, open **Settings → Google Sheet** and pick the .json key file.
+5. In the app, open **Settings**, click **Browse** next to the service-account key and pick the
+   .json file, or paste or type its path (quotes, `~`, a `file://` link, a path missing `/home/`
+   or a slash are all fine; if it's not found, the app looks for that file in Downloads, Desktop
+   and Documents). The app keeps its own private copy, so the original can be deleted.
 
 Copy the same .json to each computer. Keep it private, because anyone who has it can edit the sheet.
 

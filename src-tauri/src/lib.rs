@@ -3,6 +3,7 @@ pub mod engine;
 #[cfg(target_os = "linux")]
 mod linux;
 pub mod model;
+pub mod paths;
 pub mod plan;
 pub mod sheets;
 pub mod snapshot;
@@ -227,7 +228,18 @@ fn source(c: &Config) -> Result<Source, String> {
                 return Err("Add your service-account key file in Settings to connect to the sheet.".into());
             }
             // {:#} keeps the cause ("No such file or directory", "Permission denied"), not just the summary.
-            sheets::Client::new(std::path::Path::new(&c.key_path), &c.sheet_id).map(Source::Sheets).map_err(|e| format!("{e:#}"))
+            sheets::Client::new(std::path::Path::new(&c.key_path), &c.sheet_id).map(Source::Sheets).map_err(|e| {
+                let mut msg = format!("{e:#}");
+                if !std::path::Path::new(&c.key_path).exists() {
+                    let found = paths::key_candidates(paths::home_dir().as_deref());
+                    msg += &match found.as_slice() {
+                        [] => ". Click Browse next to the key box to pick the file.".to_string(),
+                        [one] => format!(". Found a key at {}: click Browse and pick it, or paste that path.", one.display()),
+                        many => format!(". Keys found: {}. Click Browse and pick yours.", many.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")),
+                    };
+                }
+                msg
+            })
         }
     }
 }
@@ -398,21 +410,6 @@ fn discard_pending(state: State<'_, AppState>) -> View {
     build_view(&s)
 }
 
-/// Tidy a pasted path: surrounding quotes (Ubuntu's Files copies 'with quotes'),
-/// a file:// prefix, and a leading ~ for the home folder.
-fn clean_path(raw: &str) -> String {
-    let mut p = raw.trim().trim_matches(|c| c == '\'' || c == '"').trim().to_string();
-    if let Some(rest) = p.strip_prefix("file://") {
-        p = urlencoding::decode(rest).map(|s| s.into_owned()).unwrap_or_else(|_| rest.to_string());
-    }
-    if p == "~" || p.starts_with("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            p = format!("{}{}", home.to_string_lossy(), &p[1..]);
-        }
-    }
-    p
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,22 +451,25 @@ mod tests {
         assert!(q.is_empty());
     }
 
-    #[test]
-    fn clean_path_handles_pasted_forms() {
-        assert_eq!(super::clean_path("  '/a/b c.json' "), "/a/b c.json");
-        assert_eq!(super::clean_path("file:///a/b%20c.json"), "/a/b c.json");
-        assert_eq!(super::clean_path("\"/x.json\""), "/x.json");
-        // Windows has no HOME (and no ~ paths), so only check the expansion where it applies.
-        if let Ok(home) = std::env::var("HOME") {
-            assert_eq!(super::clean_path("~/keys/k.json"), format!("{home}/keys/k.json"));
-        }
-    }
 }
 
 #[tauri::command]
 async fn save_config(state: State<'_, AppState>, mut config: Config) -> Result<View, String> {
-    config.key_path = clean_path(&config.key_path);
-    config.snapshot_path = clean_path(&config.snapshot_path);
+    let home = paths::home_dir();
+    // Whatever was typed for the key: find the file it means and keep the app's own copy.
+    // If it can't be found, keep what was typed so the error (with suggestions) says so.
+    let dir = state.0.lock().unwrap().dir.clone();
+    config.key_path = match paths::find_file(&config.key_path, home.as_deref()) {
+        Some(found) if found != dir.join("service-account.json") => {
+            let bytes = std::fs::read(&found).map_err(|e| format!("can't read {}: {e}", found.display()))?;
+            store_key(&bytes, &dir)?.display().to_string()
+        }
+        Some(found) => found.display().to_string(),
+        None => paths::clean_path(&config.key_path),
+    };
+    config.snapshot_path = paths::find_file(&config.snapshot_path, home.as_deref())
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| paths::clean_path(&config.snapshot_path));
     {
         let mut s = state.0.lock().unwrap();
         s.config = config;
@@ -548,26 +548,34 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
 fn import_file(state: State<'_, AppState>, kind: String, data: String) -> Result<String, String> {
     use base64::Engine as _;
     let bytes = base64::engine::general_purpose::STANDARD.decode(data.trim()).map_err(|e| format!("couldn't read the file: {e}"))?;
-    let name = match kind.as_str() {
-        "key" => {
-            let sa: sheets::ServiceAccount = serde_json::from_slice(&bytes)
-                .map_err(|_| "That file isn't a Google service-account JSON key.".to_string())?;
-            if sa.private_key.is_empty() {
-                return Err("That key file has no private key in it.".into());
-            }
-            "service-account.json"
+    let dir = state.0.lock().unwrap().dir.clone();
+    let path = match kind.as_str() {
+        "key" => store_key(&bytes, &dir)?,
+        "snapshot" => {
+            let p = dir.join("snapshot.xlsx");
+            std::fs::write(&p, &bytes).map_err(|e| format!("couldn't save {}: {e}", p.display()))?;
+            p
         }
-        "snapshot" => "snapshot.xlsx",
         _ => return Err(format!("unknown file kind {kind}")),
     };
-    let path = state.0.lock().unwrap().path(name);
-    std::fs::write(&path, &bytes).map_err(|e| format!("couldn't save {}: {e}", path.display()))?;
+    Ok(path.display().to_string())
+}
+
+/// Check `bytes` is a service-account key and keep a private copy in the app's folder,
+/// so the original can be moved or deleted.
+fn store_key(bytes: &[u8], dir: &std::path::Path) -> Result<PathBuf, String> {
+    let sa: sheets::ServiceAccount = serde_json::from_slice(bytes).map_err(|_| "That file isn't a Google service-account JSON key.".to_string())?;
+    if sa.private_key.is_empty() {
+        return Err("That key file has no private key in it.".into());
+    }
+    let path = dir.join("service-account.json");
+    std::fs::write(&path, bytes).map_err(|e| format!("couldn't save {}: {e}", path.display()))?;
     #[cfg(unix)]
-    if kind == "key" {
+    {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
-    Ok(path.display().to_string())
+    Ok(path)
 }
 
 /// Linux desktop details for Settings ("" elsewhere).
