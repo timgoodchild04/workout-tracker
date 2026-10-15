@@ -229,7 +229,7 @@ function renderToday(el) {
   const v = S.view;
   const td = v.today;
   const session = currentSession();
-  const sv = v.sessions.find((s) => s.name === session) || { cards: [], skipped: [] };
+  const sv = v.sessions.find((s) => s.name === session) || { cards: [], skipped: [], switched_off: [] };
   const draft = readDraft();
 
   const head = `
@@ -268,6 +268,7 @@ function renderToday(el) {
       <label class="field">Log date <input type="date" id="log-date" value="${S.logDate}"></label>
       ${orderCtl}
       ${sv.skipped.length ? `<span class="small muted">Skipped (kit switched off): ${esc(sv.skipped.join(", "))}</span>` : ""}
+      ${sv.switched_off?.length ? `<span class="small muted">Switched off in Settings: ${esc(sv.switched_off.join(", "))}</span>` : ""}
     </div>`;
 
   const order = plan ? plan.order : sv.cards.map((_, i) => i);
@@ -518,13 +519,13 @@ function drawChart(p) {
 function renderProgramme(el) {
   const v = S.view;
   const on = (name) => v.settings.equipment.some((e) => e.name === name && e.enabled);
-  let html = `<h1>Programme</h1><p class="sub">Read from the sheet's 💪 Workouts tab. Edit exercises, sets and alternatives there; the app picks changes up on the next sync.</p>
+  let html = `<h1>Programme</h1><p class="sub">Read from the sheet's 💪 Workouts tab. Edit exercises, sets and alternatives there; the app picks changes up on the next sync. Switch exercises and kit on or off in Settings.</p>
     <div class="table-wrap"><table><thead><tr><th>Exercise</th><th>Sets × reps</th><th>Equipment</th><th class="num">Start</th><th>Alternative</th></tr></thead><tbody>`;
   let group = "";
   for (const p of v.programme) {
     if (p.workout !== group) { group = p.workout; html += `<tr class="group"><td colspan="5">${esc(group)}</td></tr>`; }
     const mainOn = on(p.equipment);
-    html += `<tr><td>${p.video ? `<a href="#" data-url="${esc(p.video)}">${esc(p.exercise)}</a>` : esc(p.exercise)}</td>
+    html += `<tr><td class="${p.enabled ? "" : "off"}">${p.video ? `<a href="#" data-url="${esc(p.video)}">${esc(p.exercise)}</a>` : esc(p.exercise)}</td>
       <td>${p.sets} × ${num(p.rep_low)}–${num(p.rep_high)}</td>
       <td class="${mainOn ? "" : "off"}">${esc(p.equipment)}</td><td class="num">${num(p.start_weight)}kg</td>
       <td>${p.alt_exercise ? `${esc(p.alt_exercise)} <span class="small muted">(${esc(p.alt_equipment)}, ${num(p.alt_start_weight)}kg)</span>` : '<span class="muted">—</span>'}</td></tr>`;
@@ -535,11 +536,77 @@ function renderProgramme(el) {
 
 // ---------------------------------------------------------------- Settings
 
+/** On/off switch; disabled unless connected to the live sheet. */
+function toggle(attrs, on, label) {
+  const live = S.view.status.mode === "sheets" && S.view.status.online;
+  return `<label class="switch"><input type="checkbox" ${attrs} ${on ? "checked" : ""} ${live && !S.busy ? "" : "disabled"} aria-label="${esc(label)}"><span></span></label>`;
+}
+
+function exerciseRows(v) {
+  const kitOn = (name) => v.settings.equipment.some((e) => e.name === name && e.enabled);
+  let html = "", group = "";
+  for (const p of v.programme) {
+    if (p.workout !== group) { group = p.workout; html += `<tr class="group"><td colspan="3">${esc(group)}</td></tr>`; }
+    const note = !p.enabled ? "" : kitOn(p.equipment) ? ""
+      : p.alt_exercise && kitOn(p.alt_equipment) ? ` <span class="small muted">(kit off, using ${esc(p.alt_exercise)})</span>`
+      : ' <span class="small muted">(kit off, dropped)</span>';
+    html += `<tr><td class="${p.enabled ? "" : "off"}">${esc(p.exercise)}${note}</td><td>${esc(p.equipment)}</td>
+      <td>${toggle(`data-ex-row="${p.row}" data-name="${esc(p.exercise)}"`, p.enabled, `${p.exercise} on`)}</td></tr>`;
+  }
+  return html;
+}
+
+/** Write a switch to the sheet; on failure put it back and say why. */
+async function flip(box, cmd, args) {
+  setBusy(true);
+  try {
+    S.view = await invoke(cmd, args);
+    toast(`${args.name ?? args.exercise} switched ${args.enabled ? "on" : "off"}.`);
+  } catch (e) {
+    box.checked = !args.enabled;
+    toast(String(e));
+  }
+  setBusy(false);
+  render();
+}
+
+/**
+ * Browse for the key (.json) or snapshot (.xlsx). The file's contents are copied into the
+ * app's own folder and that path goes in the box, so nothing depends on the native dialog
+ * handing back a usable path (it didn't on Ubuntu).
+ */
+function pickFile(ext, target) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "." + ext;
+  input.hidden = true;
+  document.body.append(input);
+  input.addEventListener("change", async () => {
+    const file = input.files?.[0];
+    input.remove();
+    if (!file) return;
+    try {
+      const data = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result).split(",")[1] || "");
+        r.onerror = () => reject(r.error);
+        r.readAsDataURL(file);
+      });
+      $("#" + target).value = await invoke("import_file", { kind: ext === "json" ? "key" : "snapshot", data });
+      toast(`${file.name} copied into the app. Click Save and connect.`);
+    } catch (e) {
+      toast(String(e));
+    }
+  });
+  input.click();
+}
+
 function renderSettings(el) {
   const v = S.view;
   const c = v.config;
   const st = v.status;
   const set = v.settings;
+  const canSwitch = st.mode === "sheets" && st.online;
   el.innerHTML = `<h1>Settings</h1><p class="sub">${st.online ? `Connected · last synced ${esc(st.last_sync)}` : esc(st.message || "Not connected")}</p>
     <div class="panel">
       <h3>Data source</h3>
@@ -575,11 +642,18 @@ function renderSettings(el) {
       <div class="table-wrap"><table><thead><tr><th class="num">Plate</th><th class="num">Owned</th><th>Enabled</th></tr></thead><tbody>
         ${set.plates.map((p) => `<tr><td class="num">${num(p.weight)}kg</td><td class="num">${num(p.owned)}</td><td>${p.enabled ? "Yes" : "No"}</td></tr>`).join("")}
       </tbody></table></div>
-      <h3>Equipment</h3>
-      <div class="table-wrap"><table><thead><tr><th>Kit</th><th>Load type</th><th>Enabled</th></tr></thead><tbody>
-        ${set.equipment.map((e) => `<tr><td>${esc(e.name)}</td><td>${esc(e.load_type)}</td><td>${e.enabled ? "Yes" : '<span class="muted">No</span>'}</td></tr>`).join("")}
-      </tbody></table></div>
-      <p class="small muted" style="margin:0">Change these in the sheet. The app reads them on every sync.</p></div>` : ""}
+      <p class="small muted" style="margin:0">Change these in the sheet. The app reads them on every sync.</p></div>
+    <div class="panel"><h3>Equipment</h3>
+      <p class="small muted" style="margin:0">Switch kit off when you can't get to it. Every exercise that needs it moves to its alternative, or drops out of its session if it hasn't got one.${canSwitch ? "" : " Connect to the Google Sheet to change these."}</p>
+      <div class="table-wrap"><table><thead><tr><th>Kit</th><th>Load type</th><th>On</th></tr></thead><tbody>
+        ${set.equipment.map((e) => `<tr><td>${esc(e.name)}</td><td>${esc(e.load_type)}</td>
+          <td>${toggle(`data-equip-row="${e.row}" data-name="${esc(e.name)}"`, e.enabled, `${e.name} on`)}</td></tr>`).join("")}
+      </tbody></table></div></div>
+    <div class="panel"><h3>Exercises</h3>
+      <p class="small muted" style="margin:0">Switch an exercise off to drop it from its session. Its history is kept, and switching it back on picks up where you left off.</p>
+      <div class="table-wrap"><table><thead><tr><th>Exercise</th><th>Equipment</th><th>On</th></tr></thead><tbody>
+        ${exerciseRows(v)}
+      </tbody></table></div></div>` : ""}
     <div class="panel"><h3>Updates</h3>
       <p class="muted" style="margin:0">${S.update?.current ? `Version ${esc(S.update.current)}` : "Version unknown"}${
         S.update?.checking ? " · checking…" : S.update?.latest ? ` · <b>${esc(S.update.latest)} is available</b>` : S.update?.current && !S.update.error ? " · up to date" : ""}</p>
@@ -588,20 +662,18 @@ function renderSettings(el) {
       <div>${S.update?.latest ? updateAction(true) : `<button class="btn" id="check-update">Check for updates</button>`}</div></div>
     <p class="small muted" id="data-dir"></p>`;
 
+  $$("input[data-equip-row]", el).forEach((b) => b.addEventListener("change", () =>
+    flip(b, "set_equipment", { row: +b.dataset.equipRow, name: b.dataset.name, enabled: b.checked })));
+  $$("input[data-ex-row]", el).forEach((b) => b.addEventListener("change", () =>
+    flip(b, "set_exercise", { row: +b.dataset.exRow, exercise: b.dataset.name, enabled: b.checked })));
+
   const showMode = () => {
     const mode = $('input[name="mode"]:checked', el).value;
     $$("[data-for]", el).forEach((r) => (r.hidden = r.dataset.for !== mode));
   };
   $$('input[name="mode"]', el).forEach((r) => r.addEventListener("change", showMode));
   showMode();
-  $$("[data-browse]", el).forEach((b) => b.addEventListener("click", async () => {
-    try {
-      const f = await T.dialog.open({ multiple: false, filters: [{ name: b.dataset.ext, extensions: [b.dataset.ext] }] });
-      if (f) $("#" + b.dataset.browse).value = f;
-    } catch (e) {
-      toast(`Couldn't open the file picker: ${e}. Paste the file's path into the box instead.`);
-    }
-  }));
+  $$("[data-browse]", el).forEach((b) => b.addEventListener("click", () => pickFile(b.dataset.ext, b.dataset.browse)));
   $("#save-config").addEventListener("click", async () => {
     setBusy(true);
     try {
@@ -623,7 +695,8 @@ function renderSettings(el) {
     S.view = await invoke("discard_pending");
     render();
   });
-  invoke("data_dir").then((d) => ($("#data-dir").textContent = `App data (config, offline copy, queue): ${d}`));
+  Promise.all([invoke("data_dir"), invoke("platform_info")]).then(([d, p]) =>
+    ($("#data-dir").innerHTML = `App data (config, offline copy, queue): ${esc(d)}${p ? `<br>${esc(p)}` : ""}`));
 }
 
 // ------------------------------------------------------------------ boot

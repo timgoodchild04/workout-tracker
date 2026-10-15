@@ -9,7 +9,6 @@
     {
       "identifier": "opener:allow-open-url",
       "allow": [{ "url": "https://*" }]
-    },
-    "dialog:allow-open"
+    }
   ]
 }

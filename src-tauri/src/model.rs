@@ -11,7 +11,12 @@ pub const TAB_SCHEDULE: &str = "Schedule";
 pub const TAB_LOG: &str = "📝 Workout Log";
 
 /// Ranges the app reads. Rows/columns match the sheet's own named ranges.
-pub const RANGE_WORKOUTS: &str = "A5:L61";
+pub const RANGE_WORKOUTS: &str = "A5:U61";
+pub const WORKOUTS_FIRST_ROW: usize = 5;
+/// 💪 Workouts column the app writes Yes/No into to switch an exercise on or off.
+pub const COL_EXERCISE_ON: &str = "U";
+/// ⚙️ Settings column holding each piece of equipment's Enabled? Yes/No.
+pub const COL_EQUIPMENT_ON: &str = "B";
 pub const RANGE_SETTINGS: &str = "A1:D100";
 pub const RANGE_SCHEDULE: &str = "B13:E19";
 pub const LOG_FIRST_ROW: usize = 2;
@@ -70,6 +75,9 @@ impl Plate {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Equipment {
+    /// Sheet row on ⚙️ Settings.
+    #[serde(default)]
+    pub row: usize,
     pub name: String,
     pub enabled: bool,
     pub load_type: String,
@@ -117,6 +125,16 @@ pub struct ProgRow {
     pub alt_equipment: String,
     pub alt_start_weight: f64,
     pub alt_video: String,
+    /// 💪 Workouts column U ("Exercise on?"); blank counts as on.
+    #[serde(default = "on")]
+    pub enabled: bool,
+    /// Sheet row on 💪 Workouts.
+    #[serde(default)]
+    pub row: usize,
+}
+
+fn on() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,6 +218,7 @@ impl Data {
         let equipment = (33..=52)
             .filter(|&r| !s(r, 0).is_empty())
             .map(|r| Equipment {
+                row: r,
                 name: s(r, 0).text(),
                 enabled: yes(s(r, 1)),
                 load_type: s(r, 2).text(),
@@ -242,6 +261,8 @@ impl Data {
                     alt_equipment: c(9).text(),
                     alt_start_weight: c(10).num().unwrap_or(0.0),
                     alt_video: extract_url(c(11)),
+                    enabled: !c(20).text().eq_ignore_ascii_case("no"),
+                    row: i + WORKOUTS_FIRST_ROW,
                 }
             })
             .collect();

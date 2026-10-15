@@ -222,7 +222,7 @@ pub struct Logged {
 pub fn session_cards(data: &Data, engine: &Engine, analysis: &[Analysis], session: &str, date: NaiveDate) -> (Vec<Card>, Vec<String>) {
     let mut cards = Vec::new();
     let mut skipped = Vec::new();
-    for p in data.programme.iter().filter(|p| p.workout == session) {
+    for p in data.programme.iter().filter(|p| p.workout == session && p.enabled) {
         let main_on = engine.equipment_on(&p.equipment);
         let alt_on = !p.alt_exercise.is_empty() && engine.equipment_on(&p.alt_equipment);
         let (exercise, equipment, start, video) = if main_on {

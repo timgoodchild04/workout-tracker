@@ -1,6 +1,6 @@
 [package]
 name = "workout-tracker"
-version = "0.2.1"
+version = "0.2.2"
 description = "Workout coach that reads and writes the Workout Tracker Google Sheet"
 edition = "2021"
 
@@ -24,9 +24,11 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tauri = { version = "2", features = [] }
-# xdg-portal: on Linux use the desktop's own file chooser (works inside the AppImage)
-# instead of an in-process GTK dialog.
-tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
+base64 = "0.22"
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
 urlencoding = "2.1.3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Same glib as Tauri's GTK stack; used to pin the program name (X11 WM_CLASS).
+glib = "0.18"

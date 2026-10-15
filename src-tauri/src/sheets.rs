@@ -142,6 +142,28 @@ impl Client {
         Ok(Data::from_grids(&w[0], &rest[0], &rest[1], &rest[2]))
     }
 
+    /// Set one cell to `value`, but only if `check_a1` (same tab) still reads `expect`.
+    /// Rows are addressed by number from the last sync, so this stops a write landing
+    /// on the wrong row if the sheet was rearranged since.
+    pub async fn set_cell(&self, tab: &str, check_a1: &str, expect: &str, a1: &str, value: &str) -> Result<()> {
+        let got = self.batch_get(&[q(tab, check_a1)], "UNFORMATTED_VALUE").await?;
+        let got = got.first().and_then(|g| g.first()).and_then(|r| r.first()).map(|c| c.text()).unwrap_or_default();
+        if got != expect {
+            bail!("{tab} has changed since the last sync ({check_a1} is now \"{got}\", expected \"{expect}\"). Sync and try again.");
+        }
+        let range = q(tab, a1);
+        let res = self
+            .http
+            .put(format!("{API}/{}/values/{}", self.sheet_id, urlencoding::encode(&range)))
+            .bearer_auth(self.token().await?)
+            .query(&[("valueInputOption", "USER_ENTERED")])
+            .json(&json!({ "range": range, "majorDimension": "ROWS", "values": [[value]] }))
+            .send()
+            .await?;
+        Self::check(res).await?;
+        Ok(())
+    }
+
     /// Write entries into the first empty rows after the last logged exercise.
     /// Re-reads column C first so two computers can't overwrite each other.
     pub async fn append(&self, entries: &[LogEntry]) -> Result<usize> {

@@ -76,6 +76,8 @@ pub struct SessionView {
     name: String,
     cards: Vec<Card>,
     skipped: Vec<String>,
+    /// Exercises switched off in Settings (💪 Workouts column U).
+    switched_off: Vec<String>,
     programme_plan: plan::Plan,
     best_plan: plan::Plan,
 }
@@ -166,7 +168,8 @@ fn build_view(s: &Inner) -> View {
         .map(|name| {
             let (cards, skipped) = coach::session_cards(&data, &engine, &analysis, &name, date);
             let (programme_plan, best_plan) = plan::plans(&cards, &engine, &start);
-            SessionView { name, cards, skipped, programme_plan, best_plan }
+            let switched_off = data.programme.iter().filter(|p| p.workout == name && !p.enabled).map(|p| p.exercise.clone()).collect();
+            SessionView { name, cards, skipped, switched_off, programme_plan, best_plan }
         })
         .collect();
     view.history = data
@@ -213,7 +216,8 @@ fn source(c: &Config) -> Result<Source, String> {
             if c.key_path.is_empty() {
                 return Err("Add your service-account key file in Settings to connect to the sheet.".into());
             }
-            sheets::Client::new(std::path::Path::new(&c.key_path), &c.sheet_id).map(Source::Sheets).map_err(|e| e.to_string())
+            // {:#} keeps the cause ("No such file or directory", "Permission denied"), not just the summary.
+            sheets::Client::new(std::path::Path::new(&c.key_path), &c.sheet_id).map(Source::Sheets).map_err(|e| format!("{e:#}"))
         }
     }
 }
@@ -327,8 +331,37 @@ fn discard_pending(state: State<'_, AppState>) -> View {
     build_view(&s)
 }
 
+/// Tidy a pasted path: surrounding quotes (Ubuntu's Files copies 'with quotes'),
+/// a file:// prefix, and a leading ~ for the home folder.
+fn clean_path(raw: &str) -> String {
+    let mut p = raw.trim().trim_matches(|c| c == '\'' || c == '"').trim().to_string();
+    if let Some(rest) = p.strip_prefix("file://") {
+        p = urlencoding::decode(rest).map(|s| s.into_owned()).unwrap_or_else(|_| rest.to_string());
+    }
+    if p == "~" || p.starts_with("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            p = format!("{}{}", home.to_string_lossy(), &p[1..]);
+        }
+    }
+    p
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn clean_path_handles_pasted_forms() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(super::clean_path("  '/a/b c.json' "), "/a/b c.json");
+        assert_eq!(super::clean_path("file:///a/b%20c.json"), "/a/b c.json");
+        assert_eq!(super::clean_path("~/keys/k.json"), format!("{home}/keys/k.json"));
+        assert_eq!(super::clean_path("\"/x.json\""), "/x.json");
+    }
+}
+
 #[tauri::command]
-async fn save_config(state: State<'_, AppState>, config: Config) -> Result<View, String> {
+async fn save_config(state: State<'_, AppState>, mut config: Config) -> Result<View, String> {
+    config.key_path = clean_path(&config.key_path);
+    config.snapshot_path = clean_path(&config.snapshot_path);
     {
         let mut s = state.0.lock().unwrap();
         s.config = config;
@@ -337,6 +370,32 @@ async fn save_config(state: State<'_, AppState>, config: Config) -> Result<View,
     }
     sync(&state).await;
     Ok(build_view(&state.0.lock().unwrap()))
+}
+
+/// Write one Yes/No switch to the live sheet, then re-sync so the view reflects it.
+async fn set_switch(state: &AppState, tab: &str, row: usize, name_col: &str, expect: &str, col: &str, on: bool) -> Result<View, String> {
+    let config = state.0.lock().unwrap().config.clone();
+    let Source::Sheets(client) = source(&config)? else {
+        return Err("Snapshot mode is read-only. Connect to the Google Sheet to switch things on or off.".into());
+    };
+    client
+        .set_cell(tab, &format!("{name_col}{row}"), expect, &format!("{col}{row}"), if on { "Yes" } else { "No" })
+        .await
+        .map_err(|e| e.to_string())?;
+    sync(state).await;
+    Ok(build_view(&state.0.lock().unwrap()))
+}
+
+/// Switch a piece of kit on or off (⚙️ Settings, Enabled? column).
+#[tauri::command]
+async fn set_equipment(state: State<'_, AppState>, row: usize, name: String, enabled: bool) -> Result<View, String> {
+    set_switch(&state, model::TAB_SETTINGS, row, "A", &name, model::COL_EQUIPMENT_ON, enabled).await
+}
+
+/// Switch an exercise on or off (💪 Workouts, Exercise on? column).
+#[tauri::command]
+async fn set_exercise(state: State<'_, AppState>, row: usize, exercise: String, enabled: bool) -> Result<View, String> {
+    set_switch(&state, model::TAB_WORKOUTS, row, "B", &exercise, model::COL_EXERCISE_ON, enabled).await
 }
 
 #[derive(Serialize)]
@@ -374,6 +433,44 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     app.restart()
 }
 
+/// Store a file picked in Settings inside the app's own folder and return its path.
+/// The browser-side picker hands over the file's contents rather than a path, which works
+/// the same on every platform (the native dialog's path came back empty on Ubuntu).
+#[tauri::command]
+fn import_file(state: State<'_, AppState>, kind: String, data: String) -> Result<String, String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data.trim()).map_err(|e| format!("couldn't read the file: {e}"))?;
+    let name = match kind.as_str() {
+        "key" => {
+            let sa: sheets::ServiceAccount = serde_json::from_slice(&bytes)
+                .map_err(|_| "That file isn't a Google service-account JSON key.".to_string())?;
+            if sa.private_key.is_empty() {
+                return Err("That key file has no private key in it.".into());
+            }
+            "service-account.json"
+        }
+        "snapshot" => "snapshot.xlsx",
+        _ => return Err(format!("unknown file kind {kind}")),
+    };
+    let path = state.0.lock().unwrap().path(name);
+    std::fs::write(&path, &bytes).map_err(|e| format!("couldn't save {}: {e}", path.display()))?;
+    #[cfg(unix)]
+    if kind == "key" {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(path.display().to_string())
+}
+
+/// Linux desktop details for Settings ("" elsewhere).
+#[tauri::command]
+fn platform_info() -> String {
+    #[cfg(target_os = "linux")]
+    return linux::diagnostics();
+    #[cfg(not(target_os = "linux"))]
+    String::new()
+}
+
 #[tauri::command]
 fn data_dir(state: State<'_, AppState>) -> String {
     state.0.lock().unwrap().dir.display().to_string()
@@ -381,9 +478,10 @@ fn data_dir(state: State<'_, AppState>) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    linux::pin_app_id();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             #[cfg(target_os = "linux")]
@@ -406,7 +504,7 @@ pub fn run() {
             })));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![load, save_entries, discard_pending, save_config, data_dir, check_update, install_update])
+        .invoke_handler(tauri::generate_handler![load, save_entries, discard_pending, save_config, data_dir, check_update, install_update, set_equipment, set_exercise, import_file, platform_info])
         .run(tauri::generate_context!())
         .expect("error while running the app");
 }
