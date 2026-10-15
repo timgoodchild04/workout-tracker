@@ -6,7 +6,7 @@ use crate::model::Settings;
 /// Pairs-per-side caps hard-coded in the engines' K1:K4 (0.5, 1.25, 2.5, 5kg).
 const ENGINE_CAPS: [u32; 4] = [4, 15, 6, 4];
 /// The engines only know these four plate sizes, in this order.
-const SIZES: [f64; 4] = [0.5, 1.25, 2.5, 5.0];
+pub const SIZES: [f64; 4] = [0.5, 1.25, 2.5, 5.0];
 
 pub const BARBELL: &str = "Barbell plates";
 pub const DUMBBELL: &str = "Dumbbell plates";
@@ -28,6 +28,8 @@ pub fn round2(n: f64) -> f64 {
 #[derive(Debug, Clone)]
 pub struct Combo {
     pub total: f64,
+    /// plates per side (barbell) or per end (dumbbell), by SIZES index
+    pub n: [u32; 4],
     pub plates: u32,
     pub text: String,
 }
@@ -46,7 +48,7 @@ fn pairs_for(settings: &Settings, size: f64) -> u32 {
         .sum()
 }
 
-fn plate_list(n: &[u32; 4]) -> String {
+pub fn plate_list(n: &[u32; 4]) -> String {
     // Heaviest first: 5, 2.5, 1.25, 0.5
     (0..4)
         .rev()
@@ -79,7 +81,7 @@ fn combos(settings: &Settings, dumbbell: bool) -> Vec<Combo> {
                         } else {
                             format!("{}kg per dumbbell — {} each end ({} plates)", fmt_num(total), plate_list(&n), plates)
                         };
-                        Combo { total, plates, text }
+                        Combo { total, n, plates, text }
                     } else {
                         let total = round2(settings.bar_weight + 2.0 * per);
                         let text = if count == 0 {
@@ -93,7 +95,7 @@ fn combos(settings: &Settings, dumbbell: bool) -> Vec<Combo> {
                                 count
                             )
                         };
-                        Combo { total, plates: count, text }
+                        Combo { total, n, plates: count, text }
                     });
                 }
             }
@@ -140,6 +142,24 @@ impl Engine {
             DUMBBELL => Some(&self.dumbbell),
             _ => None,
         }
+    }
+
+    /// Physical plates of each size you can use (pairs only, enabled only).
+    pub fn pool(&self) -> [u32; 4] {
+        let mut out = [0; 4];
+        for i in 0..4 {
+            out[i] = pairs_for(&self.settings, SIZES[i]) * 2;
+        }
+        out
+    }
+
+    /// Plate counts (per side / per end) for the closest buildable load.
+    pub fn plates_for(&self, load_type: &str, target: f64) -> Option<[u32; 4]> {
+        let t = round2(target);
+        self.table(load_type)?
+            .iter()
+            .min_by(|a, b| (a.total - t).abs().partial_cmp(&(b.total - t).abs()).unwrap().then(a.rank().partial_cmp(&b.rank()).unwrap()))
+            .map(|c| c.n)
     }
 
     /// Closest buildable load to `target` (fewest plates on a tie), like the

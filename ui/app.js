@@ -11,6 +11,7 @@ const S = {
   progressPick: null,
   historyFilter: "",
   busy: false,
+  order: (() => { try { return localStorage.getItem("order") || "best"; } catch { return "best"; } })(),
 };
 
 // ------------------------------------------------------------------ helpers
@@ -177,17 +178,32 @@ function renderToday(el) {
   const rest = td.is_rest && !S.session
     ? `<div class="rest"><h3>Rest day</h3><p class="muted" style="margin:0">Nothing scheduled. Pick a session above if you're training anyway.</p></div>` : "";
 
+  const pp = sv.programme_plan, bp = sv.best_plan;
+  const saves = pp && bp ? pp.moves - bp.moves : 0;
+  const plan = S.order === "best" && saves > 0 ? bp : pp;
+  const orderCtl = !pp ? "" : saves > 0
+    ? `<div class="seg" role="group" aria-label="Exercise order">
+        <button class="${plan === pp ? "on" : ""}" data-order="programme">As programmed · ${pp.moves} plate moves</button>
+        <button class="${plan === bp ? "on" : ""}" data-order="best">Fewest plate changes · ${bp.moves} (saves ${saves})</button></div>`
+    : `<span class="small muted">${pp.moves ? `This order already needs the fewest plate changes (${pp.moves} moves).` : ""}</span>`;
   const toolbar = `<div class="toolbar">
       <label class="field">Log date <input type="date" id="log-date" value="${S.logDate}"></label>
+      ${orderCtl}
       ${sv.skipped.length ? `<span class="small muted">Skipped (kit switched off): ${esc(sv.skipped.join(", "))}</span>` : ""}
     </div>`;
 
-  const cards = sv.cards.map((c, i) => card(c, i, draft[c.exercise])).join("");
+  const order = plan ? plan.order : sv.cards.map((_, i) => i);
+  const cards = order.map((i, pos) => card(sv.cards[i], i, draft[sv.cards[i].exercise], pos + 1, plan?.changes[i] || [])).join("");
 
   el.innerHTML = head + chips + off + rest + toolbar + `<div class="cards">${cards}</div>` + saveBar();
 
   $$(".chip", el).forEach((b) => b.addEventListener("click", () => { S.session = b.dataset.session; render(); }));
   $("#back-to-schedule")?.addEventListener("click", (e) => { e.preventDefault(); S.session = null; render(); });
+  $$("[data-order]", el).forEach((b) => b.addEventListener("click", () => {
+    S.order = b.dataset.order;
+    try { localStorage.setItem("order", S.order); } catch {}
+    render();
+  }));
   $("#log-date").addEventListener("change", (e) => { S.logDate = e.target.value || isoToday(); render(); });
   $$("a[data-url]", el).forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); openUrl(a.dataset.url); }));
   $$(".card input", el).forEach((inp) => inp.addEventListener("input", onEntryInput));
@@ -196,7 +212,7 @@ function renderToday(el) {
   updateSaveBar();
 }
 
-function card(c, i, d) {
+function card(c, i, d, pos, changes) {
   const bw = c.load_type === "Bodyweight";
   const [main, detail] = splitLoad(c.recommended, c.load_type);
   const n = Math.min(c.sets, 4);
@@ -212,6 +228,7 @@ function card(c, i, d) {
   const unit = bw ? "" : c.load_type === "Fixed steps" ? "kg equiv" : c.load_type === "Dumbbell plates" ? "kg each" : "kg";
   return `<article class="card ${done ? "done" : ""}" data-i="${i}" data-exercise="${esc(c.exercise)}" data-sets="${n}">
     <div class="card-head">
+      <span class="pos">${pos}</span>
       <div class="card-title">${title}
         <div class="meta">${esc(c.equipment)} · ${c.sets} × ${num(c.rep_low)}–${num(c.rep_high)}${c.substituted ? ` · <span title="Main kit is switched off">instead of ${esc(c.original)}</span>` : ""}</div>
       </div>
@@ -221,6 +238,7 @@ function card(c, i, d) {
       <div><div class="sublabel">Load today</div><div class="load-main">${esc(main)}</div><div class="load-detail">${esc(detail)}</div></div>
       <div><div class="sublabel">History</div><div class="last">${last}</div></div>
     </div>
+    ${changes.length ? `<div class="swap"><span class="sublabel">Plates before this exercise</span>${changes.map((x) => `<div>${esc(x)}</div>`).join("")}</div>` : ""}
     <div class="instr" title="${esc(c.instruction)}">${esc(coachLine(c))}</div>
     <div class="entry">
       ${bw ? "" : `<label>Weight<input class="wt" type="number" step="0.5" min="0" inputmode="decimal" data-k="weight" value="${esc(num(weight))}"></label><span class="unit">${unit}</span><span class="gap"></span>`}

@@ -92,8 +92,15 @@ pub struct Settings {
     pub jump_abs: f64,
     pub ceiling_streak: f64,
     pub drop_pct: f64,
+    /// ⚙️ Settings B18: lowest rep target of an isolation exercise (compounds sit below it)
+    #[serde(default = "default_isolation_low")]
+    pub isolation_rep_low: f64,
     pub equipment: Vec<Equipment>,
     pub ladder: Vec<LadderStep>,
+}
+
+fn default_isolation_low() -> f64 {
+    10.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,6 +215,7 @@ impl Data {
             jump_abs: num(23, 1, 2.5),
             ceiling_streak: num(24, 1, 1.0),
             drop_pct: num(25, 1, 0.25),
+            isolation_rep_low: num(18, 1, 10.0),
             equipment,
             ladder,
         };

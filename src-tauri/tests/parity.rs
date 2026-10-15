@@ -89,3 +89,20 @@ fn dashboard_and_progress_match_sheet() {
     eprintln!("progress: {} rows", rows.len());
     assert_eq!(bad, 0);
 }
+
+#[test]
+fn plate_plans() {
+    let Ok(path) = std::env::var("WT_SNAPSHOT") else { return };
+    let data = snapshot::load(std::path::Path::new(&path)).unwrap();
+    let engine = Engine::new(&data.settings);
+    let a = coach::analyse(&data, &engine);
+    for s in coach::sessions(&data) {
+        let (cards, _) = coach::session_cards(&data, &engine, &a, &s);
+        let (p, b) = workout_tracker_lib::plan::plans(&cards, &engine);
+        assert!(b.moves <= p.moves);
+        eprintln!("\n{s}: programme {} moves, best {} moves", p.moves, b.moves);
+        for &i in &b.order {
+            eprintln!("  {:<28} {:<16} {}", cards[i].exercise, cards[i].recommended.split(" — ").next().unwrap(), b.changes[i].join(" | "));
+        }
+    }
+}

@@ -1,6 +1,7 @@
 pub mod coach;
 pub mod engine;
 pub mod model;
+pub mod plan;
 pub mod sheets;
 pub mod snapshot;
 
@@ -71,6 +72,8 @@ pub struct SessionView {
     name: String,
     cards: Vec<Card>,
     skipped: Vec<String>,
+    programme_plan: plan::Plan,
+    best_plan: plan::Plan,
 }
 
 #[derive(Serialize)]
@@ -149,7 +152,8 @@ fn build_view(s: &Inner) -> View {
         .into_iter()
         .map(|name| {
             let (cards, skipped) = coach::session_cards(&data, &engine, &analysis, &name);
-            SessionView { name, cards, skipped }
+            let (programme_plan, best_plan) = plan::plans(&cards, &engine);
+            SessionView { name, cards, skipped, programme_plan, best_plan }
         })
         .collect();
     view.history = data
