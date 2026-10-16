@@ -460,7 +460,8 @@ pub struct Today {
 
 /// Where the rotation stands before `date`. The days (Days table order, Morning-focus
 /// days left out; they keep their weekday slot) are done in rounds: a round ends once
-/// every day has been done at least once, in any order. Next up is the first day, in
+/// every day has been done at least once, in any order, and a break of 14+ days
+/// starts a fresh one. Next up is the first day, in
 /// order, not yet done this round, so a day you skip stays owed until you do it and
 /// everything after it shifts back.
 #[derive(Debug, Clone, Serialize)]
@@ -490,7 +491,13 @@ pub fn rotation(data: &Data, date: NaiveDate) -> Option<Rotation> {
     let mut completed = Vec::new();
     let mut entries: Vec<(NaiveDate, usize)> = (0..data.log.len()).filter(|&i| data.log[i].date < date && order.contains(&data.log[i].workout)).map(|i| (data.log[i].date, i)).collect();
     entries.sort();
+    let mut prev: Option<NaiveDate> = None;
     for (d, i) in entries {
+        // After a long break the round starts afresh: sessions from before it don't count.
+        if prev.is_some_and(|p| (d - p).num_days() >= crate::suggest::BREAK_RESETS_AFTER_DAYS) {
+            done.clear();
+        }
+        prev = Some(d);
         let w = &data.log[i].workout;
         if !done.contains(w) {
             done.push(w.clone());

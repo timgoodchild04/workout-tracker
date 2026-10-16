@@ -272,6 +272,9 @@ fn rotation_keeps_skipped_days_owed() {
     data.session_order = workout_tracker_lib::model::ROTATION.into();
     let real = coach::today_for(&data, d(10, 16));
     eprintln!("real log, 16 Oct: {} ({})", real.session, real.notes);
+    // Legs on 3 Sep was before the 6-week break, so it doesn't count: since 12 Oct it's
+    // Push and Pull, and Legs is next.
+    assert_eq!(real.session, "🦵 Day 3 — Legs", "{}", real.notes);
     assert_eq!(real.morning, "🌅 Morning", "Morning keeps its weekday slot");
 
     let (push, pull, legs, upper) = ("🦾 Day 1 — Push", "🐺 Day 2 — Pull", "🦵 Day 3 — Legs", "💪 Day 4 — Upper");
@@ -290,6 +293,7 @@ fn rotation_keeps_skipped_days_owed() {
         (vec![(1, push), (3, upper)], pull, true),                          // two owed: first in order
         (vec![(1, push), (3, upper), (4, pull)], legs, true),
         (vec![(1, push), (2, push), (3, pull)], legs, false),               // a repeat doesn't count twice
+        (vec![(1, push), (2, pull), (3, legs), (25, push)], pull, false),   // 3 weeks off: fresh round
     ] {
         let t = next_after(&mut data, &done);
         assert_eq!((t.session.as_str(), t.owed), (want, owed), "after {done:?}: {}", t.notes);
