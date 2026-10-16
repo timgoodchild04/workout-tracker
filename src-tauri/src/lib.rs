@@ -494,6 +494,25 @@ mod tests {
     }
 
     #[test]
+    fn a_key_outside_the_app_folder_is_adopted_once() {
+        let root = std::env::temp_dir().join(format!("wt-adopt-{}", std::process::id()));
+        let (app, downloads) = (root.join("app"), root.join("Downloads"));
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::create_dir_all(&downloads).unwrap();
+        let key = downloads.join("k.json");
+        std::fs::write(&key, r#"{"type":"service_account","client_email":"a@b","private_key":"x"}"#).unwrap();
+        let mut c = Config { key_path: key.display().to_string(), ..Config::default() };
+        adopt_key(&mut c, &app);
+        assert_eq!(c.key_path, app.join("service-account.json").display().to_string());
+        let saved: Config = read_json(&app.join("config.json")).unwrap();
+        assert_eq!(saved.key_path, c.key_path, "the new path is saved");
+        std::fs::remove_file(&key).unwrap(); // the original can go now
+        adopt_key(&mut c, &app);
+        assert_eq!(c.key_path, app.join("service-account.json").display().to_string(), "nothing more to do");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn editing_a_queued_entry_replaces_it() {
         let mut q = vec![];
         enqueue(&mut q, entry("Row", 8.0, None));
@@ -760,6 +779,22 @@ fn import_file(state: State<'_, AppState>, kind: String, data: String) -> Result
     Ok(path.display().to_string())
 }
 
+/// A key set up before the app kept its own copy still points wherever it was picked
+/// from, often ~/Downloads, and was read on every sync, so macOS asked for Downloads
+/// access each time the window came back. Copy it into the app's folder once and use
+/// the copy from then on. Leaves the config alone if the file can't be read.
+fn adopt_key(config: &mut Config, dir: &std::path::Path) {
+    let key = std::path::Path::new(&config.key_path);
+    if config.key_path.is_empty() || key.starts_with(dir) {
+        return;
+    }
+    let Ok(bytes) = std::fs::read(key) else { return };
+    if let Ok(copy) = store_key(&bytes, dir) {
+        config.key_path = copy.display().to_string();
+        write_json(&dir.join("config.json"), config);
+    }
+}
+
 /// Check `bytes` is a service-account key and keep a private copy in the app's folder,
 /// so the original can be moved or deleted.
 fn store_key(bytes: &[u8], dir: &std::path::Path) -> Result<PathBuf, String> {
@@ -803,7 +838,8 @@ pub fn run() {
             linux::integrate_appimage();
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
-            let config: Config = read_json(&dir.join("config.json")).unwrap_or_default();
+            let mut config: Config = read_json(&dir.join("config.json")).unwrap_or_default();
+            adopt_key(&mut config, &dir);
             let data: Option<Data> = if config.mode == "sheets" { read_json(&dir.join("cache.json")) } else { None };
             let pending: Vec<LogEntry> = read_json(&dir.join("pending.json")).unwrap_or_default();
             app.manage(AppState(Mutex::new(Inner {
