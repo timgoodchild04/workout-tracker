@@ -289,7 +289,9 @@ function renderToday(el) {
   el.innerHTML = head + chips + off + rest + deloadNote + toolbar + timeBar + kitNote + stackNote + `<div class="cards">${cards}</div>`;
 
   $$(".chip", el).forEach((b) => b.addEventListener("click", () => { S.session = b.dataset.session; render(); }));
-  $("#back-to-schedule")?.addEventListener("click", (e) => { e.preventDefault(); S.session = null; render(); });
+  // "Back to X" opens X itself. (Clearing the choice would let the morning rule pick
+  // 🌅 Morning before noon instead of the session the link names.)
+  $("#back-to-schedule")?.addEventListener("click", (e) => { e.preventDefault(); S.session = S.view.today.session; render(); });
   $$("[data-order]", el).forEach((b) => b.addEventListener("click", () => {
     S.order = b.dataset.order;
     try { localStorage.setItem("order", S.order); } catch {}
