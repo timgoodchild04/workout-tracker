@@ -75,9 +75,9 @@ used; it keeps its name only so app versions before 0.3.0 still sync until they 
 
 ### Morning session
 
-Core and pull-up work is a short 🌅 Morning session, a day on 📅 Plan like any other. Column E of the Schedule tab says which days it's due (weekdays). On those days the
-Today screen opens on Morning until it's logged or it's past noon, then switches to the main
-session. The header shows whether Morning is done. Pick any session chip to override.
+Core and pull-up work is a short 🌅 Morning session, a day on 📅 Plan like any other. Column E of the Schedule tab says which days it's due (weekdays). The Today screen
+opens on the main session; when Morning is due its chip has a dot and the header shows
+whether it's done, so it's one tap away. On a day with no main session it opens on Morning.
 
 ### Exercise order and plate stacking
 

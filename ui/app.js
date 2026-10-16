@@ -123,8 +123,8 @@ function currentSession() {
   // Already logged a main session on this date? Show that one, even off-schedule.
   const done = logged.find((w) => w !== morning);
   if (done) return done;
-  // The morning session comes first until it's logged or it's past noon.
-  if (morning && !logged.includes(morning) && (new Date().getHours() < 12 || !main)) return morning;
+  // The main session first; Morning is a tap away (its chip and the header say if it's due).
+  // On a day with no main session, Morning is what's due.
   return main || morning || logged[0] || v.sessions[0]?.name || "";
 }
 
