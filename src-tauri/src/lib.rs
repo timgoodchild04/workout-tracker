@@ -129,6 +129,8 @@ pub struct View {
     kit: Option<plan::Kit>,
     sessions: Vec<SessionView>,
     history: Vec<HistRow>,
+    /// Sessions marked complete (queued ones have `queued` set).
+    marks: Vec<LogEntry>,
     progress: Vec<ProgressRow>,
     /// 📚 Exercises, in sheet order.
     library: Vec<LibEx>,
@@ -191,6 +193,7 @@ fn build_view(s: &Inner) -> View {
         kit: None,
         sessions: vec![],
         history: vec![],
+        marks: vec![],
         progress: vec![],
         library: vec![],
         plan: vec![],
@@ -206,15 +209,16 @@ fn build_view(s: &Inner) -> View {
     // Queued entries: edits replace their row's entry, new ones go on the end.
     for p in &s.pending {
         let q = LogEntry { queued: true, ..p.clone() };
-        match p.row.and_then(|r| data.log.iter().position(|e| e.row == Some(r))) {
-            Some(i) => data.log[i] = q,
-            None => data.log.push(q),
+        let log = if p.is_mark() { &mut data.marks } else { &mut data.log };
+        match p.row.and_then(|r| log.iter().position(|e| e.row == Some(r))) {
+            Some(i) => log[i] = q,
+            None => log.push(q),
         }
     }
     let engine = Engine::new(&data.settings);
     let analysis: Vec<Analysis> = coach::analyse(&data, &engine);
 
-    let last_row = base.log.iter().filter_map(|e| e.row).max().unwrap_or(model::LOG_FIRST_ROW - 1);
+    let last_row = base.log.iter().chain(&base.marks).filter_map(|e| e.row).max().unwrap_or(model::LOG_FIRST_ROW - 1);
     view.status.rows_left = Some(model::LOG_LAST_FORMULA_ROW as i64 - last_row as i64 - s.pending.len() as i64);
     let today = Local::now().date_naive();
     let date = s.view_date.unwrap_or(today);
@@ -256,6 +260,7 @@ fn build_view(s: &Inner) -> View {
             set_values: e.sets,
         })
         .collect();
+    view.marks = data.marks.clone();
     view.progress = coach::progress(&data, &engine, &analysis);
     view.library = data.library.clone();
     view.plan = data
@@ -371,10 +376,16 @@ async fn load(state: State<'_, AppState>, refresh: bool, date: Option<String>) -
     Ok(build_view(&state.0.lock().unwrap()))
 }
 
+/// Whether two entries are the same thing logged: the same exercise on the same date,
+/// or for "session complete" marks, the same session's mark on that date.
+fn same_entry(a: &LogEntry, b: &LogEntry) -> bool {
+    a.date == b.date && a.exercise == b.exercise && (!a.is_mark() || a.workout == b.workout)
+}
+
 /// Queue one exercise. Already queued for that date? Replace it, keeping the row
 /// it targets. Otherwise add it (row Some = edit that row, None = new row).
 fn enqueue(pending: &mut Vec<LogEntry>, e: LogEntry) {
-    match pending.iter_mut().find(|p| p.date == e.date && p.exercise == e.exercise) {
+    match pending.iter_mut().find(|p| same_entry(p, &e)) {
         Some(p) => {
             let row = p.row.or(e.row);
             *p = LogEntry { row, ..e };
@@ -385,14 +396,14 @@ fn enqueue(pending: &mut Vec<LogEntry>, e: LogEntry) {
 
 /// After a send: drop exactly what was sent. Anything changed meanwhile stays,
 /// and a new entry that has just been appended turns into an edit of its new row.
-fn settle(pending: &mut Vec<LogEntry>, sent: &[LogEntry], new_rows: &[(NaiveDate, String, usize)]) {
+fn settle(pending: &mut Vec<LogEntry>, sent: &[LogEntry], new_rows: &[(LogEntry, usize)]) {
     for done in sent {
         if let Some(i) = pending.iter().position(|p| p == done) {
             pending.remove(i);
         }
     }
     for p in pending.iter_mut().filter(|p| p.row.is_none()) {
-        if let Some((_, _, row)) = new_rows.iter().find(|(d, ex, _)| *d == p.date && *ex == p.exercise) {
+        if let Some((_, row)) = new_rows.iter().find(|(e, _)| same_entry(e, p)) {
             p.row = Some(*row);
         }
     }
@@ -408,7 +419,7 @@ async fn send_pending(state: &AppState, client: &sheets::Client) -> String {
         return String::new();
     }
     let mut sent: Vec<LogEntry> = Vec::new();
-    let mut new_rows: Vec<(NaiveDate, String, usize)> = Vec::new();
+    let mut new_rows: Vec<(LogEntry, usize)> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
     for e in pending.iter().filter(|e| e.row.is_some()) {
         match client.update_row(e).await {
@@ -421,7 +432,7 @@ async fn send_pending(state: &AppState, client: &sheets::Client) -> String {
         match client.append(&appends).await {
             Ok(first) => {
                 for (k, e) in appends.into_iter().enumerate() {
-                    new_rows.push((e.date, e.exercise.clone(), first + k));
+                    new_rows.push((e.clone(), first + k));
                     sent.push(e);
                 }
             }
@@ -464,6 +475,38 @@ async fn save_entry(state: State<'_, AppState>, entry: NewEntry) -> Result<View,
         let mut s = state.0.lock().unwrap();
         enqueue(&mut s.pending, e);
         s.save_pending();
+    }
+    sync(&state).await;
+    Ok(build_view(&state.0.lock().unwrap()))
+}
+
+/// Mark a session complete on `date` (or take the mark back), whatever's been logged
+/// of it. The mark is a 📝 Workout Log row with no sets, queued and sent like an entry.
+#[tauri::command]
+async fn mark_complete(state: State<'_, AppState>, date: String, workout: String, complete: bool) -> Result<View, String> {
+    let date = NaiveDate::parse_from_str(&date, "%Y-%m-%d").map_err(|_| format!("bad date {date}"))?;
+    let mark = LogEntry { date, workout, exercise: model::SESSION_COMPLETE.into(), weight: 0.0, sets: [None; 4], row: None, queued: false };
+    let row = {
+        let mut s = state.0.lock().unwrap();
+        let logged = s.data.as_ref().and_then(|d| d.marks.iter().find(|m| same_entry(m, &mark)).and_then(|m| m.row));
+        if complete {
+            if logged.is_none() && !s.pending.iter().any(|p| same_entry(p, &mark)) {
+                s.pending.push(mark.clone());
+                s.save_pending();
+            }
+            None
+        } else {
+            s.pending.retain(|p| !same_entry(p, &mark));
+            s.save_pending();
+            logged
+        }
+    };
+    if let Some(row) = row {
+        let config = state.0.lock().unwrap().config.clone();
+        let Source::Sheets(client) = source(&config)? else {
+            return Err("Snapshot mode is read-only. Connect to the Google Sheet to change this.".into());
+        };
+        client.clear_log_row(row, date, model::SESSION_COMPLETE).await.map_err(|e| format!("{e:#}"))?;
     }
     sync(&state).await;
     Ok(build_view(&state.0.lock().unwrap()))
@@ -525,11 +568,25 @@ mod tests {
     }
 
     #[test]
+    fn two_sessions_marked_complete_on_one_day_are_both_kept() {
+        let mark = |w: &str| LogEntry { workout: w.into(), exercise: model::SESSION_COMPLETE.into(), weight: 0.0, sets: [None; 4], ..entry("", 0.0, None) };
+        let mut q = vec![];
+        enqueue(&mut q, mark("Pull"));
+        enqueue(&mut q, mark("Morning"));
+        enqueue(&mut q, mark("Pull"));
+        assert_eq!(q, vec![mark("Pull"), mark("Morning")]);
+        // Only Pull's mark was sent: Morning's stays queued, still a new row.
+        let sent = vec![mark("Pull")];
+        settle(&mut q, &sent, &[(mark("Pull"), 90)]);
+        assert_eq!(q, vec![mark("Morning")]);
+    }
+
+    #[test]
     fn edit_made_during_a_send_survives_as_an_edit_of_the_new_row() {
         // Row 8 reps was being appended when it was edited to 10.
         let sent = vec![entry("Row", 8.0, None)];
         let mut q = vec![entry("Row", 10.0, None), entry("Curl", 9.0, Some(80))];
-        settle(&mut q, &sent, &[(sent[0].date, "Row".into(), 81)]);
+        settle(&mut q, &sent, &[(sent[0].clone(), 81)]);
         assert_eq!(q, vec![entry("Row", 10.0, Some(81)), entry("Curl", 9.0, Some(80))]);
         // Sending those clears the queue.
         let sent2 = q.clone();
@@ -855,7 +912,7 @@ pub fn run() {
             }), tauri::async_runtime::Mutex::new(())));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![load, save_entry, discard_pending, save_config, data_dir, check_update, install_update, set_equipment, set_slot, add_slot, swap_slot, set_slot_sets, remove_slot, set_session_order, delete_entry, start_deload, import_file, platform_info])
+        .invoke_handler(tauri::generate_handler![load, save_entry, mark_complete, discard_pending, save_config, data_dir, check_update, install_update, set_equipment, set_slot, add_slot, swap_slot, set_slot_sets, remove_slot, set_session_order, delete_entry, start_deload, import_file, platform_info])
         .run(tauri::generate_context!())
         .expect("error while running the app");
 }

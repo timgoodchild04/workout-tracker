@@ -485,20 +485,22 @@ pub fn rotation(data: &Data, date: NaiveDate) -> Option<Rotation> {
     if order.is_empty() {
         return None;
     }
-    // Sessions in the order they were logged (log order within a day).
+    // Sessions in the order they were logged (log order within a day), a session
+    // marked complete counting like a logged one.
     let mut done: Vec<String> = Vec::new();
     let mut last = None;
     let mut completed = Vec::new();
-    let mut entries: Vec<(NaiveDate, usize)> = (0..data.log.len()).filter(|&i| data.log[i].date < date && order.contains(&data.log[i].workout)).map(|i| (data.log[i].date, i)).collect();
+    let mut entries: Vec<(NaiveDate, usize, &str)> =
+        data.sessions_done().enumerate().filter(|&(_, (d, w))| d < date && order.iter().any(|o| o == w)).map(|(i, (d, w))| (d, i, w)).collect();
     entries.sort();
     let mut prev: Option<NaiveDate> = None;
-    for (d, i) in entries {
+    for (d, _, w) in entries {
         // After a long break the round starts afresh: sessions from before it don't count.
         if prev.is_some_and(|p| (d - p).num_days() >= crate::suggest::BREAK_RESETS_AFTER_DAYS) {
             done.clear();
         }
         prev = Some(d);
-        let w = &data.log[i].workout;
+        let w = &w.to_string();
         if !done.contains(w) {
             done.push(w.clone());
         }
@@ -652,4 +654,26 @@ pub fn progress(data: &Data, engine: &Engine, analysis: &[Analysis]) -> Vec<Prog
             ProgressRow { exercise: name, equipment, bodyweight: bw, current, best, sessions: idx.len(), change, next, points }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{DayInfo, LogEntry, SESSION_COMPLETE};
+
+    #[test]
+    fn a_session_marked_complete_counts_in_the_rotation() {
+        let mut data = Data::from_grids(&vec![], &vec![], &vec![], &vec![], &vec![], &vec![]);
+        data.days = ["Push", "Pull", "Legs"].map(|n| DayInfo { name: n.into(), focus: n.into() }).to_vec();
+        let d = |day| NaiveDate::from_ymd_opt(2026, 11, day).unwrap();
+        let entry = |day, w: &str, ex: &str| LogEntry { date: d(day), workout: w.into(), exercise: ex.into(), weight: 0.0, sets: [None; 4], row: None, queued: false };
+        data.log = vec![entry(1, "Push", "Press")];
+        assert_eq!(rotation(&data, d(10)).unwrap().next, "Pull");
+        // Pull marked complete with nothing logged: Legs is next, nothing owed.
+        data.marks = vec![entry(2, "Pull", SESSION_COMPLETE)];
+        let r = rotation(&data, d(10)).unwrap();
+        assert_eq!((r.next.as_str(), r.ahead.len()), ("Legs", 0));
+        data.marks.push(entry(3, "Legs", SESSION_COMPLETE));
+        assert_eq!(rotation(&data, d(10)).unwrap().completed, vec![d(3)], "the round completes");
+    }
 }

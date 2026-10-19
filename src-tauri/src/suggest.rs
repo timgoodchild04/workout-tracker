@@ -336,9 +336,9 @@ pub fn review(data: &Data, analysis: &[Analysis], today: NaiveDate) -> WeekRevie
         data.log.iter().filter(|e| e.date >= from && e.date < to).map(|e| e.sets.iter().flatten().filter(|&&r| r > 0.0).count() as f64).sum::<f64>()
     };
     let mut sessions: Vec<(String, NaiveDate)> = Vec::new();
-    for e in data.log.iter().filter(|e| e.date >= start && e.date <= today) {
-        if !sessions.iter().any(|(w, d)| *w == e.workout && *d == e.date) {
-            sessions.push((e.workout.clone(), e.date));
+    for (date, workout) in data.sessions_done().filter(|&(d, _)| d >= start && d <= today) {
+        if !sessions.iter().any(|(w, d)| w == workout && *d == date) {
+            sessions.push((workout.to_string(), date));
         }
     }
     sessions.sort_by_key(|(_, d)| *d);

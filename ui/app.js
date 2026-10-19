@@ -119,8 +119,9 @@ function currentSession() {
   const isToday = td && S.logDate === td.date;
   const morning = isToday && has(td.morning) ? td.morning : "";
   const main = isToday && !td.is_rest ? td.session : "";
-  const logged = v.history.filter((h) => h.date === S.logDate && has(h.workout)).map((h) => h.workout);
-  // Already logged a main session on this date? Show that one, even off-schedule.
+  const marked = (v.marks || []).filter((m) => m.date === S.logDate && has(m.workout)).map((m) => m.workout);
+  const logged = [...v.history.filter((h) => h.date === S.logDate && has(h.workout)).map((h) => h.workout), ...marked];
+  // Already logged (or marked complete) a main session on this date? Show that one, even off-schedule.
   const done = logged.find((w) => w !== morning);
   if (done) return done;
   // The main session first; Morning is a tap away (its chip and the header say if it's due).
@@ -128,11 +129,16 @@ function currentSession() {
   return main || morning || logged[0] || v.sessions[0]?.name || "";
 }
 
+/** The "session complete" mark for a session on a date, if it has one. */
+function markOf(v, date, session) {
+  return (v.marks || []).find((m) => m.date === date && m.workout === session);
+}
+
 /** "🌅 Morning ✓" / "🌅 Morning not done yet" for the Today header ("" when none is due). */
 function morningNote(v) {
   const td = v.today;
   if (!td.morning || !v.sessions.some((s) => s.name === td.morning)) return "";
-  const done = v.history.some((h) => h.date === td.date && h.workout === td.morning);
+  const done = v.history.some((h) => h.date === td.date && h.workout === td.morning) || !!markOf(v, td.date, td.morning);
   return ` · ${esc(td.morning)} ${done ? "✓" : "not done yet"}`;
 }
 
@@ -276,17 +282,23 @@ function renderToday(el) {
   const order = plan ? plan.order : sv.cards.map((_, i) => i);
   const { sets: trimmed, dropped } = shortOnTime(sv.cards, order);
   const shown = order.filter((i) => i !== dropped);
+  const mark = markOf(v, S.logDate, session);
   const cards = shown.map((i, pos) => card({ ...sv.cards[i], sets: trimmed.get(i) ?? sv.cards[i].sets }, i, draft[sv.cards[i].exercise], pos + 1, plan?.changes[i] || [])).join("");
-  const left = shown.filter((i) => !sv.cards[i].logged).map((i) => ({ ...sv.cards[i], sets: trimmed.get(i) ?? sv.cards[i].sets }));
+  const left = shown.filter((i) => !sv.cards[i].logged && !mark).map((i) => ({ ...sv.cards[i], sets: trimmed.get(i) ?? sv.cards[i].sets }));
   const mins = estimateMinutes(left, plan);
   const timeBar = sv.cards.length ? `<div class="timebar">
-      <span>${left.length ? `≈ <b>${mins} min</b> left (${left.length} exercise${left.length > 1 ? "s" : ""})` : "All done for this session"}</span>
-      <button class="btn ${isShort() ? "primary" : ""}" id="short-toggle" title="Trim isolation work by a set and drop the last accessory. Main lifts are never cut.">${isShort() ? "Short on time: on" : "Short on time?"}</button>
-      ${isShort() && dropped != null ? `<span class="small muted">Dropped for time: ${esc(sv.cards[dropped].exercise)}</span>` : ""}</div>` : "";
+      <span>${mark
+        ? `<b>Marked complete</b>${mark.queued ? " (queued)" : ""} · ${sv.cards.filter((c) => c.logged).length} of ${sv.cards.length} exercises logged`
+        : left.length ? `≈ <b>${mins} min</b> left (${left.length} exercise${left.length > 1 ? "s" : ""})` : "All done for this session"}</span>
+      ${mark
+        ? `<button class="btn" id="mark-complete" title="Counts this session as not done again. What you logged stays.">Undo complete</button>`
+        : left.length ? `<button class="btn" id="mark-complete" title="Counts this session as done for the day (and the rotation), with the rest left unlogged.">Mark session complete</button>` : ""}
+      ${mark ? "" : `<button class="btn ${isShort() ? "primary" : ""}" id="short-toggle" title="Trim isolation work by a set and drop the last accessory. Main lifts are never cut.">${isShort() ? "Short on time: on" : "Short on time?"}</button>`}
+      ${!mark && isShort() && dropped != null ? `<span class="small muted">Dropped for time: ${esc(sv.cards[dropped].exercise)}</span>` : ""}</div>` : "";
   const deloadNote = sv.cards.some((c) => c.deload) && v.review?.deload_until
     ? `<div class="deload-note"><b>Deload week</b> until ${esc(fmtDate(v.review.deload_until))}: about 60% of your usual sets at your normal weights. Progress picks up from your last normal session afterwards.</div>` : "";
 
-  el.innerHTML = head + chips + off + rest + deloadNote + toolbar + timeBar + kitNote + stackNote + `<div class="cards">${cards}</div>`;
+  el.innerHTML = head + chips + off + rest + deloadNote + toolbar + timeBar + kitNote + stackNote + `<div class="cards ${mark ? "closed" : ""}">${cards}</div>`;
 
   $$(".chip", el).forEach((b) => b.addEventListener("click", () => { S.session = b.dataset.session; render(); }));
   // "Back to X" opens X itself. (Clearing the choice would let the morning rule pick
@@ -308,7 +320,25 @@ function renderToday(el) {
   $$(".same-btn", el).forEach((b) => b.addEventListener("click", () => sameAsLast(b.closest(".card"))));
   $$(".card input", el).forEach((inp) => inp.addEventListener("keydown", onEnterNext));
   $("#short-toggle")?.addEventListener("click", () => { setShort(!isShort()); render(); });
+  $("#mark-complete")?.addEventListener("click", () => markComplete(session, !mark));
   updateSavedCount();
+}
+
+/** Mark `session` complete on the log date (or undo it), after any saves in flight. */
+function markComplete(session, complete) {
+  const date = S.logDate;
+  setBusy(true);
+  saveChain = saveChain.then(async () => {
+    try {
+      S.view = await invoke("mark_complete", { date, workout: session, complete });
+      toast(complete ? `${session} marked complete.` : `${session} isn't marked complete any more.`);
+      if (/^Couldn't save/.test(S.view.status.message)) toast(S.view.status.message, 6000);
+    } catch (err) {
+      toast(String(err), 6000);
+    }
+    setBusy(false);
+    renderWhenIdle();
+  });
 }
 
 function card(c, i, d, pos, changes) {

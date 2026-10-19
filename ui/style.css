@@ -96,6 +96,8 @@ input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accen
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px 18px; display: grid; gap: 10px; }
 .card.logged { background: color-mix(in srgb, var(--good) 5%, var(--surface)); }
 .card.done { border-color: color-mix(in srgb, var(--good) 45%, var(--line)); }
+/* Session marked complete: what wasn't logged is left behind. */
+.cards.closed .card:not(.logged) { opacity: 0.55; }
 .card-head { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
 .pos { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--surface-2); color: var(--text-2); display: grid; place-items: center; font-size: 12px; font-weight: 700; margin-top: 1px; }
 .kit { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; margin-bottom: 10px; font-size: 13px; display: grid; gap: 2px; }

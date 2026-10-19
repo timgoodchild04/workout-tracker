@@ -67,6 +67,11 @@ used; it keeps its name only so app versions before 0.3.0 still sync until they 
 - **Session length.** Today shows roughly how long what's left will take (sets, rest, warm-ups,
   setup and plate changes). **Short on time** trims each isolation exercise by a set and drops
   the last one; main lifts are never cut. It's remembered per day and session on that computer.
+- **Mark session complete.** Done for the day with exercises left? *Mark session complete*
+  counts the session as done as it stands: in the rotation, the weekly review and the Morning
+  ✓, even with nothing logged. The rest of the cards are greyed out, and *Undo complete*
+  takes it back. The mark is a row in 📝 Workout Log with the exercise `✓ Session complete`
+  and no sets, so every computer sees it (📈 Progress lists it as an exercise with no data).
 - **Quick entry.** Enter moves to the next box and on to the next exercise; *Same as last
   time* fills in last session's weight and reps. Each card shows its rest length, and the
   library's Notes column as **Cues**.

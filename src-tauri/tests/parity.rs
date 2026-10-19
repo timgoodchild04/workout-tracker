@@ -299,6 +299,11 @@ fn rotation_keeps_skipped_days_owed() {
         assert_eq!((t.session.as_str(), t.owed), (want, owed), "after {done:?}: {}", t.notes);
         eprintln!("after {:?}: {} — {}", done.iter().map(|(_, w)| w.rsplit(" — ").next().unwrap()).collect::<Vec<_>>(), t.session, t.notes);
     }
+    // Legs marked complete with nothing logged still counts as done this round.
+    data.log = vec![entry(1, push), entry(2, pull)];
+    data.marks = vec![workout_tracker_lib::model::LogEntry { exercise: workout_tracker_lib::model::SESSION_COMPLETE.into(), sets: [None; 4], ..entry(3, legs) }];
+    let t = coach::today_for(&data, d(11, 30));
+    assert_eq!((t.session.as_str(), t.owed), (upper, false), "Legs marked complete: {}", t.notes);
 }
 
 /// Deloads: fewer sets that week, progression ignores the deload entries, due after N weeks.

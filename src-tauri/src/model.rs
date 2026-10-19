@@ -36,6 +36,9 @@ pub const LOG_FIRST_ROW: usize = 2;
 /// row 2000, so the sheet only "sees" entries up to here.
 pub const LOG_LAST_FORMULA_ROW: usize = 2000;
 pub const RANGE_LOG: &str = "A2:H2000";
+/// Exercise name of a 📝 Workout Log row that marks a session complete (no sets):
+/// the session counts as done even with exercises left unlogged.
+pub const SESSION_COMPLETE: &str = "✓ Session complete";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Cell {
@@ -203,6 +206,13 @@ pub struct LogEntry {
     pub queued: bool,
 }
 
+impl LogEntry {
+    /// A "session complete" mark rather than an exercise.
+    pub fn is_mark(&self) -> bool {
+        self.exercise == SESSION_COMPLETE
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Data {
     pub settings: Settings,
@@ -221,6 +231,9 @@ pub struct Data {
     pub deloads: Vec<NaiveDate>,
     pub schedule: Vec<SchedDay>,
     pub log: Vec<LogEntry>,
+    /// Sessions marked complete (📝 Workout Log rows named SESSION_COMPLETE), kept out of `log`.
+    #[serde(default)]
+    pub marks: Vec<LogEntry>,
 }
 
 impl Data {
@@ -233,6 +246,11 @@ impl Data {
     /// date and the six days after it.
     pub fn deload_on(&self, date: NaiveDate) -> Option<NaiveDate> {
         self.deloads.iter().rev().find(|&&s| s <= date && (date - s).num_days() < 7).copied()
+    }
+
+    /// Every (date, session) done: logged entries, then sessions marked complete.
+    pub fn sessions_done(&self) -> impl Iterator<Item = (NaiveDate, &str)> {
+        self.log.iter().chain(&self.marks).map(|e| (e.date, e.workout.as_str()))
     }
 
     /// A day's focus from the Days table ("" if it isn't listed).
@@ -379,7 +397,7 @@ impl Data {
             })
             .collect();
 
-        let log = log
+        let (marks, log): (Vec<LogEntry>, Vec<LogEntry>) = log
             .iter()
             .enumerate()
             .filter_map(|(i, _)| {
@@ -397,12 +415,12 @@ impl Data {
                     queued: false,
                 })
             })
-            .collect();
+            .partition(|e| e.is_mark());
 
         let session_order = at(plan_settings, 0, 1).text();
         let deload_every = at(plan_settings, 0, 4).num().unwrap_or(6.0);
         let mut deloads: Vec<NaiveDate> = (0..plan.len()).filter_map(|i| parse_date(at(plan, i, 19))).collect();
         deloads.sort();
-        Data { settings, library, plan: slots, days, targets, session_order, deload_every, deloads, schedule, log }
+        Data { settings, library, plan: slots, days, targets, session_order, deload_every, deloads, schedule, log, marks }
     }
 }
