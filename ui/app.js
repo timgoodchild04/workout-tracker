@@ -493,6 +493,7 @@ function stopRest() {
   if (rest) clearInterval(rest.tick);
   rest = null;
   $("#rest")?.remove();
+  document.body.classList.remove("resting");
 }
 
 function drawRest() {
@@ -504,6 +505,9 @@ function drawRest() {
       <span class="rest-label"></span><span class="rest-time"></span>
       <button class="btn" id="rest-more">+30s</button><button class="btn" id="rest-skip">Skip</button></div>`);
     bar = $("#rest");
+    document.body.classList.add("resting");
+    // Keep the field you're on clear of the bar that just appeared.
+    if ($("#main").contains(document.activeElement)) document.activeElement.scrollIntoView({ block: "nearest" });
     $("#rest-more").addEventListener("click", () => { if (rest) { rest.end = Math.max(rest.end, Date.now()) + 30000; drawRest(); } });
     $("#rest-skip").addEventListener("click", stopRest);
   }

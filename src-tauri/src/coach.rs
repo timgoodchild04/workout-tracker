@@ -485,16 +485,18 @@ pub fn rotation(data: &Data, date: NaiveDate) -> Option<Rotation> {
     if order.is_empty() {
         return None;
     }
-    // Sessions in the order they were logged (log order within a day), a session
-    // marked complete counting like a logged one.
+    // Sessions in the order they were logged (sheet row order within a day, queued
+    // entries after the sheet's), a session marked complete counting like a logged one.
     let mut done: Vec<String> = Vec::new();
     let mut last = None;
     let mut completed = Vec::new();
-    let mut entries: Vec<(NaiveDate, usize, &str)> =
-        data.sessions_done().enumerate().filter(|&(_, (d, w))| d < date && order.iter().any(|o| o == w)).map(|(i, (d, w))| (d, i, w)).collect();
+    let mut entries: Vec<(NaiveDate, usize, usize, &str)> = data.log.iter().chain(&data.marks).enumerate()
+        .filter(|(_, e)| e.date < date && order.iter().any(|o| *o == e.workout))
+        .map(|(i, e)| (e.date, e.row.unwrap_or(usize::MAX), i, e.workout.as_str()))
+        .collect();
     entries.sort();
     let mut prev: Option<NaiveDate> = None;
-    for (d, _, w) in entries {
+    for (d, _, _, w) in entries {
         // After a long break the round starts afresh: sessions from before it don't count.
         if prev.is_some_and(|p| (d - p).num_days() >= crate::suggest::BREAK_RESETS_AFTER_DAYS) {
             done.clear();
@@ -675,5 +677,19 @@ mod tests {
         assert_eq!((r.next.as_str(), r.ahead.len()), ("Legs", 0));
         data.marks.push(entry(3, "Legs", SESSION_COMPLETE));
         assert_eq!(rotation(&data, d(10)).unwrap().completed, vec![d(3)], "the round completes");
+    }
+
+    #[test]
+    fn a_mark_counts_in_sheet_row_order_within_a_day() {
+        let mut data = Data::from_grids(&vec![], &vec![], &vec![], &vec![], &vec![], &vec![]);
+        data.days = ["Push", "Pull", "Legs"].map(|n| DayInfo { name: n.into(), focus: n.into() }).to_vec();
+        let d = |day| NaiveDate::from_ymd_opt(2026, 11, day).unwrap();
+        let entry = |day, row, w: &str, ex: &str| LogEntry { date: d(day), workout: w.into(), exercise: ex.into(), weight: 0.0, sets: [None; 4], row: Some(row), queued: false };
+        data.log = vec![entry(1, 2, "Push", "Press"), entry(2, 3, "Pull", "Row"), entry(4, 5, "Push", "Press")];
+        // Legs marked complete on the 4th in the row above that day's Push: it closes
+        // the round and Push starts the next one, so Pull is next (not Push again).
+        data.marks = vec![entry(4, 4, "Legs", SESSION_COMPLETE)];
+        let r = rotation(&data, d(10)).unwrap();
+        assert_eq!((r.next.as_str(), r.completed), ("Pull", vec![d(4)]));
     }
 }

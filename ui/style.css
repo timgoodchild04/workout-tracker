@@ -237,6 +237,9 @@ h2 { font-size: 18px; margin: 28px 0 4px; }
 .rest-bar.done { border-color: var(--good); }
 .rest-bar.done .rest-time { color: var(--good); }
 @media (max-width: 720px) { .rest-bar { bottom: 70px; } }
+/* While the timer shows, room below the last card so its fields can scroll clear of it. */
+body.resting main { padding-bottom: 120px; scroll-padding-bottom: 100px; }
+@media (max-width: 720px) { body.resting main { padding-bottom: 170px; scroll-padding-bottom: 150px; } }
 
 /* History edit/delete */
 .hist-actions { width: 1%; }
