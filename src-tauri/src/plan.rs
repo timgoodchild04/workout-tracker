@@ -278,11 +278,14 @@ fn permutations(items: &[usize]) -> Vec<Vec<usize>> {
 /// Plans for a session that may be partly logged already. Logged exercises are done:
 /// they stay first, in programme order, with nothing to change. The rest are planned
 /// from `start`, which already includes what the logged ones left on the kit.
+/// Once the main lift is done, the rest are free to reorder: whatever plate-loaded
+/// exercise happens to come first among them isn't the main lift.
 pub fn plans_remaining(cards: &[Card], engine: &Engine, start: &State) -> (Plan, Plan) {
     let todo: Vec<usize> = (0..cards.len()).filter(|&i| cards[i].logged.is_none()).collect();
     if todo.len() == cards.len() {
         return plans(cards, engine, start);
     }
+    let main_done = needs(cards, engine).iter().position(|n| n.is_some()).is_some_and(|i| cards[i].logged.is_some());
     let done: Vec<usize> = (0..cards.len()).filter(|&i| cards[i].logged.is_some()).collect();
     let sub: Vec<Card> = todo.iter().map(|&i| cards[i].clone()).collect();
     let widen = |p: Plan| {
@@ -293,11 +296,16 @@ pub fn plans_remaining(cards: &[Card], engine: &Engine, start: &State) -> (Plan,
         let order = done.iter().copied().chain(p.order.into_iter().map(|j| todo[j])).collect();
         Plan { order, moves: p.moves, naive_moves: p.naive_moves, changes }
     };
-    let (programme, best) = plans(&sub, engine, start);
+    let (programme, best) = plans_keeping(&sub, engine, start, !main_done);
     (widen(programme), widen(best))
 }
 
 pub fn plans(cards: &[Card], engine: &Engine, start: &State) -> (Plan, Plan) {
+    plans_keeping(cards, engine, start, true)
+}
+
+/// `keep_main`: the first plate-loaded exercise is the main lift and keeps its place.
+fn plans_keeping(cards: &[Card], engine: &Engine, start: &State, keep_main: bool) -> (Plan, Plan) {
     let needs = needs(cards, engine);
     let pool = engine.pool();
     let arr: HashMap<usize, Vec<Stack>> = needs.iter().enumerate().filter_map(|(i, n)| n.map(|n| (i, arrangements(&n.n)))).collect();
@@ -308,7 +316,7 @@ pub fn plans(cards: &[Card], engine: &Engine, start: &State) -> (Plan, Plan) {
     let programme: Vec<usize> = (0..cards.len()).collect();
 
     // Skip the first plate-loaded exercise: the main lift keeps its place.
-    let slots: Vec<usize> = (0..cards.len()).filter(|&i| needs[i].is_some()).skip(1).collect();
+    let slots: Vec<usize> = (0..cards.len()).filter(|&i| needs[i].is_some()).skip(keep_main as usize).collect();
     let iso_low = engine.settings.isolation_rep_low;
     let is_iso = |i: usize| cards[i].rep_low >= iso_low;
     let comp: Vec<usize> = slots.iter().copied().filter(|&i| !is_iso(i)).collect();
