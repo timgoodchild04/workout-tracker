@@ -8,6 +8,7 @@ const S = {
   tab: "today",
   session: null,        // session chosen on the Today tab (null = follow schedule)
   logDate: isoToday(),
+  day: isoToday(),      // the calendar day logDate and session were chosen on
   progressPick: null,
   historyFilter: "",
   busy: false,
@@ -103,6 +104,17 @@ async function load(refresh = false) {
   }
   setBusy(false);
   render();
+}
+
+/** On a new calendar day, drop yesterday's choices (log date, picked session) so the
+ *  Today tab follows the rotation again. Returns true when it rolled over. */
+function newDay() {
+  const today = isoToday();
+  if (S.day === today) return false;
+  S.day = today;
+  S.logDate = today;
+  S.session = null;
+  return true;
 }
 
 function setBusy(b) {
@@ -1115,7 +1127,9 @@ function renderSettings(el) {
 
 function switchTab(t) {
   S.tab = t;
-  render();
+  // A new day since the screen was last set up: reload so Today shows the next session.
+  if (t === "today" && newDay() && !S.busy) load(S.view?.status?.mode === "sheets");
+  else render();
   $("#main").scrollTop = 0;
 }
 $$(".tab").forEach((b) => b.addEventListener("click", () => switchTab(b.dataset.view)));
@@ -1127,7 +1141,11 @@ window.addEventListener("blur", () => {
   if (cardEl) autoSave(cardEl);
 });
 // Pick up entries logged on another computer when the window comes back into focus.
-window.addEventListener("focus", () => { if (S.view?.status?.mode === "sheets" && !S.busy) load(true); });
+// On a new day this also moves Today on from yesterday's session.
+window.addEventListener("focus", () => {
+  const rolled = newDay();
+  if (!S.busy && (rolled || S.view?.status?.mode === "sheets")) load(S.view?.status?.mode === "sheets");
+});
 
 load(false);
 checkUpdate(true);
