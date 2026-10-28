@@ -1,8 +1,8 @@
 """Finish a release built by the parallel jobs: write latest.json (what the in-app
 updater reads) from the uploaded .sig files, then publish the draft.
 
-Refuses to publish unless macOS, Linux (AppImage + .deb) and Windows are all there,
-so the updater never sees a release missing a platform.
+Refuses to publish unless macOS, Linux (AppImage + .deb), Windows and the Android
+.apk are all there, so the updater never sees a release missing a platform.
 
   GH_TOKEN=... python3 publish_release.py OWNER/REPO RELEASE_ID [--dry-run]
 """
@@ -47,6 +47,9 @@ def main():
     repo, release_id = sys.argv[1], sys.argv[2]
     dry = "--dry-run" in sys.argv
     release = json.loads(call(f"{API}/repos/{repo}/releases/{release_id}"))
+    # Phones aren't in latest.json (they only read its version), but the APK must be there.
+    if not any(a["name"].endswith(".apk") for a in release["assets"]):
+        sys.exit(f"no Android .apk in {release['tag_name']}")
     doc = updater_json(repo, release)
     print(json.dumps(doc, indent=2))
     if dry:

@@ -947,6 +947,7 @@ pub struct UpdateInfo {
 }
 
 /// Ask GitHub Releases (the updater endpoint in tauri.conf.json) for a newer version.
+#[cfg(desktop)]
 #[tauri::command]
 async fn check_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
     use tauri_plugin_updater::UpdaterExt;
@@ -960,8 +961,28 @@ async fn check_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
     })
 }
 
+/// Phones can't replace the app in place: read the release's latest.json and, when
+/// it's newer, the UI links to the release to download the APK.
+#[cfg(mobile)]
+#[tauri::command]
+async fn check_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
+    let current = app.package_info().version.to_string();
+    let url = "https://github.com/timgoodchild04/workout-tracker/releases/latest/download/latest.json";
+    let latest: serde_json::Value = reqwest::get(url).await.map_err(|e| e.to_string())?.json().await.map_err(|e| e.to_string())?;
+    let version = latest["version"].as_str().unwrap_or_default().trim_start_matches('v').to_string();
+    let parts = |v: &str| v.split('.').map(|p| p.parse::<u32>().unwrap_or(0)).collect::<Vec<_>>();
+    let newer = parts(&version) > parts(&current);
+    Ok(UpdateInfo {
+        current,
+        latest: newer.then_some(version),
+        notes: latest["notes"].as_str().unwrap_or_default().to_string(),
+        can_install: false,
+    })
+}
+
 /// Download the newer version, check its signature, replace the app and restart.
 /// Queued entries and typed-in reps are already saved to disk, so nothing is lost.
+#[cfg(desktop)]
 #[tauri::command]
 async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
@@ -969,6 +990,12 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     let Some(update) = update else { return Err("You're already on the latest version.".into()) };
     update.download_and_install(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
     app.restart()
+}
+
+#[cfg(mobile)]
+#[tauri::command]
+async fn install_update() -> Result<(), String> {
+    Err("Download the new APK from GitHub and open it to update.".into())
 }
 
 /// Store a file picked in Settings inside the app's own folder and return its path.
@@ -1042,9 +1069,10 @@ fn data_dir(state: State<'_, AppState>) -> String {
 pub fn run() {
     #[cfg(target_os = "linux")]
     linux::pin_app_id();
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    builder
         .setup(|app| {
             #[cfg(target_os = "linux")]
             linux::integrate_appimage();

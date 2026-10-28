@@ -197,11 +197,12 @@ details summary { cursor: pointer; font-weight: 600; }
 /* narrow windows: nav becomes a bottom bar */
 @media (max-width: 720px) {
   .shell { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
-  .nav { order: 2; flex-direction: row; border-right: 0; border-top: 1px solid var(--line); padding: 4px; justify-content: space-around; }
+  /* Phones: keep clear of the status bar, camera cut-out and gesture bar (0 elsewhere). */
+  .nav { order: 2; flex-direction: row; border-right: 0; border-top: 1px solid var(--line); padding: 4px 4px max(4px, env(safe-area-inset-bottom)); justify-content: space-around; }
   .brand, .sync span:not(.dot) { display: none; }
   .sync { margin: 0; border: 0; padding: 4px; }
   .tab { flex-direction: column; gap: 2px; font-size: 11px; padding: 6px 4px; }
-  main { padding: 18px 16px 80px; }
+  main { padding: max(18px, env(safe-area-inset-top)) 16px 80px; }
   .load { grid-template-columns: 1fr; gap: 6px; }
   .row { grid-template-columns: 1fr; }
 }

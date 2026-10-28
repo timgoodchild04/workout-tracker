@@ -1209,7 +1209,9 @@ async function flip(box, cmd, args) {
 function pickFile(ext, target) {
   const input = document.createElement("input");
   input.type = "file";
-  input.accept = "." + ext;
+  // Android matches by file type, and a downloaded .json key often has none, so it'd be
+  // greyed out. import_file checks what was picked either way.
+  if (!/Android/i.test(navigator.userAgent)) input.accept = "." + ext;
   input.hidden = true;
   document.body.append(input);
   input.addEventListener("change", async () => {
