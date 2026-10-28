@@ -167,7 +167,7 @@ function render() {
     $("#go-settings")?.addEventListener("click", () => switchTab("settings"));
     return;
   }
-  ({ today: renderToday, history: renderHistory, progress: renderProgress, coach: renderCoach, programme: renderProgramme, settings: renderSettings })[S.tab](el);
+  ({ today: renderToday, rowing: renderRowing, history: renderHistory, progress: renderProgress, coach: renderCoach, programme: renderProgramme, settings: renderSettings })[S.tab](el);
 }
 
 function renderStatus() {
@@ -264,8 +264,16 @@ function renderToday(el) {
     ? td.rotation
       ? `<p class="owed-note">${esc(td.session)} is next up${td.owed ? " and still owed from this round" : ""}. Doing this instead leaves it waiting: it stays next up until it's done. <a href="#" id="back-to-schedule">Back to ${esc(td.session)}</a></p>`
       : `<p class="small muted">You're looking at a different session from your schedule. <a href="#" id="back-to-schedule">Back to ${esc(td.session)}</a></p>` : "";
-  const rest = td.is_rest && !S.session && session !== td.morning
-    ? `<div class="rest"><h3>Rest day</h3><p class="muted" style="margin:0">Nothing scheduled. Pick a session above if you're training anyway.</p></div>` : "";
+  // A Schedule day called "Row" (or anything with "row" in it that isn't a lifting session) is a rowing day.
+  const rowDay = !td.is_rest && /\brow/i.test(td.session) && !v.sessions.some((s) => s.name === td.session);
+  const rowed = v.rowing?.sessions.find((r) => r.date === S.logDate);
+  const rowLink = `<a href="#" class="go-rowing">Open Rowing</a>`;
+  const rest = (td.is_rest || rowDay) && !S.session && session !== td.morning
+    ? `<div class="rest"><h3>${rowDay ? "🚣 Rowing day" : "Rest day"}</h3><p class="muted" style="margin:0">${rowed
+        ? `Rowed: ${rowed.metres / 1000}km at ${fmtTime(rowed.split)}/500m average. ${rowLink}`
+        : rowDay ? `Log your pieces on the Rowing tab. ${rowLink}`
+        : `Nothing scheduled. Pick a session above if you're training anyway, or log a row. ${rowLink}`}</p></div>`
+    : rowed ? `<p class="small muted">🚣 Rowed today too: ${rowed.metres / 1000}km at ${fmtTime(rowed.split)}/500m. ${rowLink}</p>` : "";
 
   const pp = sv.programme_plan, bp = sv.best_plan;
   const saves = pp && bp ? pp.moves - bp.moves : 0;
@@ -322,6 +330,7 @@ function renderToday(el) {
   // "Back to X" opens X itself. (Clearing the choice would let the morning rule pick
   // 🌅 Morning before noon instead of the session the link names.)
   $("#back-to-schedule")?.addEventListener("click", (e) => { e.preventDefault(); S.session = S.view.today.session; render(); });
+  $$(".go-rowing", el).forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); switchTab("rowing"); }));
   $$("[data-order]", el).forEach((b) => b.addEventListener("click", () => {
     S.order = b.dataset.order;
     try { localStorage.setItem("order", S.order); } catch {}
@@ -824,6 +833,199 @@ function drawChart(p) {
   $("#hit").addEventListener("mouseleave", () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); });
 }
 
+// ---------------------------------------------------------------- Rowing
+// 3000m pieces with a rest between. Times are typed like the erg shows them
+// ("11:42.3"); the app keeps seconds. One session per date: saving again updates it.
+
+const PIECE_M = 3000;
+
+/** "11:42.3" / "0:11:42" -> seconds; "" -> null; anything else -> NaN. */
+function parseTime(str) {
+  const t = String(str ?? "").trim();
+  if (!t) return null;
+  const parts = t.split(":");
+  if (parts.length < 2 || parts.length > 3 || parts.some((p) => p.trim() === "" || isNaN(Number(p)))) return NaN;
+  const secs = parts.reduce((a, p) => a * 60 + Number(p), 0);
+  return secs > 0 ? secs : NaN;
+}
+function fmtTime(secs) {
+  if (secs == null || isNaN(secs)) return "";
+  const t = Math.round(secs * 10);
+  const h = Math.floor(t / 36000), m = Math.floor(t / 600) % 60, ss = ((t % 600) / 10).toFixed(1).padStart(4, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+const splitOf = (piece) => piece / (PIECE_M / 500);
+const wattsOf = (split) => Math.round(2.8 / Math.pow(split / 500, 3));
+
+const rowDraftKey = () => `row|${S.logDate}`;
+function readRowDraft() {
+  try { return JSON.parse(localStorage.getItem(rowDraftKey())) || null; } catch { return null; }
+}
+function writeRowDraft(d) {
+  try { d ? localStorage.setItem(rowDraftKey(), JSON.stringify(d)) : localStorage.removeItem(rowDraftKey()); } catch {}
+}
+
+/** What's typed in the rowing card: { pieces: [secs|null|NaN ×3], rest, spm, hr, notes, raw }. */
+function readRowCard() {
+  const f = (k) => $(`#row-card [data-k="${k}"]`)?.value ?? "";
+  const n = (k) => (f(k).trim() === "" ? null : Number(f(k)));
+  const raw = { p0: f("p0"), p1: f("p1"), p2: f("p2"), rest: f("rest"), spm: f("spm"), hr: f("hr"), notes: f("notes") };
+  return { pieces: [0, 1, 2].map((k) => parseTime(raw[`p${k}`])), rest: n("rest"), spm: n("spm"), hr: n("hr"), notes: raw.notes, raw };
+}
+
+/** Avg split / watts as typed, or what's wrong. */
+function rowLive(e) {
+  if (e.pieces.some((p) => Number.isNaN(p))) return `<span class="bad-text">Type piece times like the erg shows them, e.g. 11:42.3</span>`;
+  const done = e.pieces.filter((p) => p != null);
+  if (!done.length) return `<span class="muted">Type each 3000m time as m:ss.s</span>`;
+  const split = splitOf(done.reduce((a, b) => a + b, 0) / done.length);
+  const fade = e.pieces[0] != null && e.pieces[1] != null ? splitOf(e.pieces[1]) - splitOf(e.pieces[0]) : null;
+  return `<b>${done.length * PIECE_M / 1000}km</b> · <b>${fmtTime(split)}</b>/500m average · <b>${wattsOf(split)}W</b>${
+    fade != null ? ` · piece 2 ${Math.abs(fade) < 0.05 ? "level with" : `${Math.abs(fade).toFixed(1)}s/500m ${fade > 0 ? "slower" : "faster"} than`} piece 1` : ""}`;
+}
+
+function renderRowing(el) {
+  const v = S.view, r = v.rowing;
+  const logged = r.sessions.find((x) => x.date === S.logDate);
+  const d = readRowDraft();
+  const val = (k, saved) => (d && d[k] != null ? d[k] : saved ?? "");
+  const pieceVal = (k) => val(`p${k}`, logged?.pieces[k] != null ? fmtTime(logged.pieces[k]) : "");
+  const last = r.sessions.find((x) => x.date < S.logDate);
+  const t = r.target;
+  const state = d ? pill("queued", "Not saved yet") : logged ? (logged.pb ? pill("new", "🏆 PB") + " " : "") + (logged.pending ? pill("queued", "Queued") : pill("increase", "✓ Saved")) : "";
+  const since = new Date(); since.setDate(since.getDate() - 30);
+  const recent = r.sessions.filter((x) => new Date(x.date) >= since);
+
+  const stats = `<div class="chart-stats">
+      <div class="stat"><div class="v">${r.best_piece ? fmtTime(r.best_piece[0]) : "—"}</div><div class="k">Best 3000m${r.best_piece ? ` · ${esc(fmtDate(r.best_piece[1]))}` : ""}</div></div>
+      <div class="stat"><div class="v">${r.best_split ? fmtTime(r.best_split[0]) : "—"}</div><div class="k">Best average /500m</div></div>
+      <div class="stat"><div class="v">${recent.length}</div><div class="k">Rows, last 30 days</div></div>
+      <div class="stat"><div class="v">${num(recent.reduce((a, x) => a + x.metres, 0) / 1000)}km</div><div class="k">Distance, last 30 days</div></div>
+    </div>`;
+
+  const card = `<article class="row-card ${logged ? "logged" : ""}" id="row-card">
+    <div class="card-head">
+      <div class="card-title">3000m pieces<div class="meta">${last ? `Last time (${esc(fmtDate(last.date))}): ${last.pieces.filter((p) => p != null).map(fmtTime).join(" / ")} · ${fmtTime(last.split)}/500m${last.rest_min != null ? ` · ${num(last.rest_min)} min rest` : ""}` : "No rows logged yet"}</div></div>
+      <span class="save-state">${state}</span>
+    </div>
+    ${t ? `<div class="instr">${t.split ? `<b>Target ${fmtTime(t.split)}/500m</b> (${fmtTime(t.piece)} per piece). ` : ""}${esc(t.text.replace(/ Aim for .*?per 3000m\./, ""))}</div>` : ""}
+    <div class="entry">
+      ${[0, 1, 2].map((k) => `<label>Piece ${k + 1}${k === 2 ? " (opt.)" : ""}<input class="time" type="text" inputmode="decimal" autocomplete="off" placeholder="${t?.piece ? esc(fmtTime(t.piece)) : "m:ss.s"}" data-k="p${k}" value="${esc(pieceVal(k))}"></label>`).join("")}
+      <span class="gap"></span>
+      <label>Rest min<input type="number" min="0" step="0.5" inputmode="decimal" data-k="rest" value="${esc(val("rest", num(logged?.rest_min ?? last?.rest_min)))}"></label>
+      <label>SPM<input type="number" min="0" step="1" inputmode="numeric" data-k="spm" value="${esc(val("spm", num(logged?.spm)))}"></label>
+      <label title="Average heart rate from your watch's Rowing machine workout summary">Avg HR<input type="number" min="0" step="1" inputmode="numeric" data-k="hr" value="${esc(val("hr", num(logged?.hr)))}"></label>
+    </div>
+    <label class="field notes-field">Notes<input type="text" data-k="notes" value="${esc(val("notes", logged?.notes))}" placeholder="Damper, how it felt…"></label>
+    <div class="row-inline"><span class="small" id="row-live"></span>
+      <button class="btn primary" id="row-save">${logged ? "Update" : "Save"}</button></div>
+  </article>`;
+
+  const rows = r.sessions.map((x) => `<tr class="${x.date === S.logDate ? "selected" : ""}">
+      <td>${esc(fmtDate(x.date, { weekday: "short", day: "numeric", month: "short", year: "numeric" }))}${x.notes ? `<div class="small muted">${esc(x.notes)}</div>` : ""}</td>
+      <td>${x.pieces.filter((p) => p != null).map(fmtTime).join(" / ")}</td>
+      <td class="num">${x.rest_min != null ? num(x.rest_min) + " min" : "—"}</td>
+      <td class="num">${fmtTime(x.split)}</td><td class="num">${num(x.watts)}W</td>
+      <td class="num">${x.spm != null ? num(x.spm) : "—"}</td><td class="num">${x.hr != null ? num(x.hr) : "—"}</td>
+      <td>${x.pb ? pill("new", "🏆 PB") : ""}${x.pending ? " " + pill("queued", "Queued") : ""}</td>
+      <td class="hist-actions"><div><button class="icon-btn" data-row-edit="${x.date}" title="Edit" aria-label="Edit the row on ${esc(x.date)}">✎</button>
+        <button class="icon-btn" data-row-del="${x.date}" title="Delete" aria-label="Delete the row on ${esc(x.date)}">×</button></div></td></tr>`).join("");
+
+  el.innerHTML = `<h1>Rowing</h1>
+    <p class="sub">3000m pieces with a rest between. Lower times are better; the average split per 500m is the one to beat.</p>
+    ${!r.tab && v.status.mode === "sheets" ? `<p class="small muted">The first row you save adds a 🚣 Rowing tab to the sheet.</p>` : ""}
+    <div class="toolbar"><label class="field">Date <input type="date" id="row-date" value="${S.logDate}"></label></div>
+    ${card}
+    ${r.sessions.length > 1 ? `<div class="chart-card" id="chart-card"><h3>Average split per 500m · faster is higher</h3>${stats}
+        <svg class="chart" id="chart" role="img" aria-label="Average split per 500m per session"></svg><div class="tooltip" id="tip" hidden></div></div>`
+      : r.sessions.length ? `<div class="chart-card">${stats}</div>` : ""}
+    ${r.sessions.length ? `<div class="table-wrap"><table><thead><tr><th>Date</th><th>Pieces</th><th class="num">Rest</th><th class="num">Avg /500m</th><th class="num">Watts</th><th class="num">SPM</th><th class="num">HR</th><th></th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : ""}`;
+
+  const live = () => { $("#row-live").innerHTML = rowLive(readRowCard()); };
+  live();
+  $("#row-date").addEventListener("change", (e) => { S.logDate = e.target.value || isoToday(); load(false); });
+  $$("#row-card input").forEach((inp) => {
+    inp.addEventListener("input", () => {
+      writeRowDraft(readRowCard().raw);
+      $("#row-card .save-state").innerHTML = pill("queued", "Not saved yet");
+      live();
+    });
+    inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); saveRow(); } });
+  });
+  $("#row-save").addEventListener("click", saveRow);
+  $$("[data-row-edit]", el).forEach((b) => b.addEventListener("click", () => {
+    S.logDate = b.dataset.rowEdit;
+    load(false).then(() => { $("#main").scrollTop = 0; $('#row-card [data-k="p0"]')?.focus(); });
+  }));
+  $$("[data-row-del]", el).forEach((b) => b.addEventListener("click", async () => {
+    const x = r.sessions.find((s) => s.date === b.dataset.rowDel);
+    if (!confirm(`Delete the row on ${fmtDate(x.date)} (${x.pieces.filter((p) => p != null).map(fmtTime).join(" / ")})? This clears its row in the sheet.`)) return;
+    setBusy(true);
+    try {
+      S.view = await invoke("delete_row", { row: x.row ?? null, date: x.date });
+      toast(`Row on ${fmtDate(x.date)} deleted.`);
+    } catch (e) { toast(String(e), 6000); }
+    setBusy(false);
+    render();
+  }));
+  if (r.sessions.length > 1) drawRowChart([...r.sessions].reverse());
+}
+
+async function saveRow() {
+  const e = readRowCard();
+  if (e.pieces.some((p) => Number.isNaN(p))) return toast("Type piece times like 11:42.3 (minutes:seconds).");
+  if (e.pieces.every((p) => p == null)) return toast("Type at least one piece time.");
+  const logged = S.view.rowing.sessions.find((x) => x.date === S.logDate);
+  const entry = { date: S.logDate, pieces: e.pieces, rest_min: e.rest, spm: e.spm, hr: e.hr, notes: e.notes, row: logged?.row ?? null };
+  setBusy(true);
+  try {
+    S.view = await invoke("save_row", { entry });
+    writeRowDraft(null);
+    const saved = S.view.rowing.sessions.find((x) => x.date === entry.date);
+    toast(/^Couldn't save/.test(S.view.status.message) ? S.view.status.message
+      : `Row saved${saved?.pending ? " (queued)" : ""}${saved?.pb ? ". 🏆 Best average yet!" : "."}`, 5000);
+  } catch (err) { toast(String(err), 6000); }
+  setBusy(false);
+  render();
+}
+
+/** Average split per session, the axis flipped so faster sits higher. */
+function drawRowChart(pts0) {
+  const svg = $("#chart");
+  const W = svg.clientWidth || 800, H = 240;
+  const m = { l: 48, r: 14, t: 12, b: 26 };
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const pts = pts0.map((x) => ({ ...x, t: new Date(x.date).getTime(), y: x.split }));
+  const ys = pts.map((q) => q.y);
+  const lo = Math.min(...ys), hi = Math.max(...ys), pad = Math.max(1, (hi - lo) * 0.25);
+  const ticks = niceTicks(lo - pad, hi + pad);
+  const y0 = ticks[0], y1 = ticks[ticks.length - 1];
+  const t0 = pts[0].t, t1 = pts[pts.length - 1].t;
+  const X = (t) => m.l + (t1 === t0 ? (W - m.l - m.r) / 2 : ((t - t0) / (t1 - t0)) * (W - m.l - m.r));
+  const Y = (v) => m.t + ((v - y0) / (y1 - y0 || 1)) * (H - m.t - m.b);
+  let g = ticks.map((v) => `<line class="grid" x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}"/><text class="axis-label" x="${m.l - 8}" y="${Y(v) + 4}" text-anchor="end">${fmtTime(v).replace(/\.0$/, "")}</text>`).join("");
+  const labelIdx = pts.length < 4 ? pts.map((_, i) => i) : [0, Math.round((pts.length - 1) / 2), pts.length - 1];
+  g += labelIdx.map((i) => `<text class="axis-label" x="${X(pts[i].t)}" y="${H - 6}" text-anchor="${i === 0 ? "start" : i === pts.length - 1 ? "end" : "middle"}">${esc(fmtDate(pts[i].date, { day: "numeric", month: "short" }))}</text>`).join("");
+  g += `<path class="series" d="${pts.map((q, i) => `${i ? "L" : "M"}${X(q.t).toFixed(1)},${Y(q.y).toFixed(1)}`).join("")}"/>`;
+  g += pts.map((q) => `<circle class="marker" cx="${X(q.t)}" cy="${Y(q.y)}" r="4"/>`).join("");
+  g += `<line class="cross" id="cross" y1="${m.t}" y2="${H - m.b}" visibility="hidden"/><rect id="hit" stroke="none" x="${m.l}" y="0" width="${W - m.l - m.r}" height="${H}" fill="transparent"/>`;
+  svg.innerHTML = g;
+  const tip = $("#tip"), cross = $("#cross"), card = $("#chart-card");
+  $("#hit").addEventListener("mousemove", (ev) => {
+    const r = svg.getBoundingClientRect();
+    const x = ((ev.clientX - r.left) / r.width) * W;
+    let best = pts[0];
+    for (const q of pts) if (Math.abs(X(q.t) - x) < Math.abs(X(best.t) - x)) best = q;
+    cross.setAttribute("x1", X(best.t)); cross.setAttribute("x2", X(best.t)); cross.setAttribute("visibility", "visible");
+    const cr = card.getBoundingClientRect();
+    tip.hidden = false;
+    tip.innerHTML = `<b>${esc(fmtDate(best.date))}</b> · ${fmtTime(best.split)}/500m · ${num(best.watts)}W · ${best.pieces.filter((p) => p != null).map(fmtTime).join(" / ")}`;
+    tip.style.left = `${r.left - cr.left + (X(best.t) / W) * r.width}px`;
+    tip.style.top = `${r.top - cr.top + (Y(best.y) / H) * r.height - 10}px`;
+  });
+  $("#hit").addEventListener("mouseleave", () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); });
+}
+
 // ---------------------------------------------------------------- Programme
 
 /** Slots grouped by day, days in session order (rows added later sit with their day). */
@@ -1156,7 +1358,7 @@ function switchTab(t) {
 }
 $$(".tab").forEach((b) => b.addEventListener("click", () => switchTab(b.dataset.view)));
 $("#refresh").addEventListener("click", () => !S.busy && load(true));
-window.addEventListener("resize", () => { if (S.tab === "progress") render(); });
+window.addEventListener("resize", () => { if (S.tab === "progress" || S.tab === "rowing") render(); });
 // Switching away mid-card saves that card, so nothing waits on you coming back.
 window.addEventListener("blur", () => {
   const cardEl = document.activeElement?.closest?.(".card");

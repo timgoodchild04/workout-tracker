@@ -9,6 +9,7 @@ sessions into it, and the sheet keeps working on its own exactly as before.
 | Screen | What's on it |
 |---|---|
 | Today | Today's scheduled session (or a rest-day note), the load to put on the bar with the plates for each side, last time's numbers and trend, and boxes to type in your reps. Each exercise saves itself to the sheet (see below), and its card shows Saved / Queued / Not saved yet. |
+| Rowing | Your 3000m pieces: a target split for today, boxes for each piece time, rest, stroke rate and heart rate, your bests, a chart of average split and every session (edit or delete). |
 | History | Every logged exercise, grouped by day, filterable by exercise. |
 | Progress | The 📈 Progress table, plus a chart of every session for the exercise you pick. |
 | Coach | Suggestions from your plan and log, each with a one-click change to the plan: weekly sets per muscle against your targets, stalled exercises, and bodyweight moves ready for their harder (or easier) version. Plus a sets-per-muscle table. |
@@ -82,6 +83,25 @@ used; it keeps its name only so app versions before 0.3.0 still sync until they 
 - **This week** on the Coach tab: sessions, working sets against last week, PBs, rotation
   rounds and anything owed, and how close the next deload is.
 
+### Rowing
+
+Rowing sessions are 3000m pieces with a rest between (usually two, sometimes three). Every
+piece is the same distance, so the app records each piece's **time** and works out the
+**average split per 500m** (what the erg shows) and **watts** (2.80 / pace³, better for
+spotting a trend). Also recorded: rest between pieces (minutes, so sessions compare), stroke
+rate and average heart rate (from the Pixel Watch's *Rowing machine* workout summary).
+
+- Type times as the erg shows them, e.g. `11:42.3`. One session per date; saving again
+  updates it. Unlike lifting cards there's a Save button (or press Enter), since a half-typed
+  time would otherwise save.
+- **Target.** From the last session before the date: even pieces → half a second faster per
+  500m; piece 2 more than 2s/500m slower than piece 1 → hold last time's average on both;
+  14+ days since the last row → a second slower. Rules live at the top of `rowing.rs`.
+- A **🏆 PB** is a better average split than every earlier session.
+- Rowing doesn't count towards the lifting rotation or the weekly review. A Schedule day whose
+  session has "Row" in it (and isn't a lifting session) shows as a rowing day on Today, and
+  rest days link to the Rowing tab.
+
 ### Morning session
 
 Core and pull-up work is a short 🌅 Morning session, a day on 📅 Plan like any other. Column E of the Schedule tab says which days it's due (weekdays). The Today screen
@@ -123,6 +143,12 @@ first, so two computers can't overwrite each other). Changing a card that's alre
 updates **that same row**, after re-reading it to check it still holds that date and
 exercise. Clearing a saved card's boxes never changes or deletes its row; delete it in the sheet.
 Saves go one at a time, and a sync never runs twice at once, so nothing is written twice.
+
+Rowing goes in its own **🚣 Rowing** tab, which the app adds the first time a row is saved:
+A:H are Date, Piece 1-3 (durations, shown as m:ss.0), Rest (min), SPM, Avg HR and Notes;
+I:K are ARRAYFORMULAs in row 2 (total metres, average split /500m, watts), so rows typed
+straight into the sheet work too. Edits and deletes re-check the row's date first, like the log.
+Versions before 0.8.0 ignore the tab.
 
 The other writes come from **Settings** and the **Coach** tab, and only touch 📅 Plan
 columns A:E and ⚙️ Settings column B (kit on/off):

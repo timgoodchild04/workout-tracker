@@ -5,6 +5,7 @@ mod linux;
 pub mod model;
 pub mod paths;
 pub mod plan;
+pub mod rowing;
 pub mod sheets;
 pub mod snapshot;
 pub mod suggest;
@@ -12,7 +13,7 @@ pub mod suggest;
 use chrono::{Local, NaiveDate};
 use coach::{Analysis, Card, ProgressRow, Today, Verdict};
 use engine::Engine;
-use model::{Data, DayInfo, LibEx, LogEntry, Settings};
+use model::{Data, DayInfo, LibEx, LogEntry, RowSession, Settings};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -42,6 +43,8 @@ struct Inner {
     config: Config,
     data: Option<Data>,
     pending: Vec<LogEntry>,
+    /// Rowing sessions waiting to go to the sheet (rowing-pending.json).
+    row_pending: Vec<RowSession>,
     online: bool,
     message: String,
     last_sync: Option<String>,
@@ -70,6 +73,7 @@ impl Inner {
     }
     fn save_pending(&self) {
         write_json(&self.path("pending.json"), &self.pending);
+        write_json(&self.path("rowing-pending.json"), &self.row_pending);
     }
 }
 
@@ -142,6 +146,7 @@ pub struct View {
     volume: Vec<suggest::VolumeRow>,
     review: Option<suggest::WeekReview>,
     settings: Option<Settings>,
+    rowing: rowing::Rowing,
 }
 
 #[derive(Serialize)]
@@ -164,6 +169,7 @@ pub fn preview_view_json(data: Data) -> String {
         config: Config::default(),
         data: Some(data),
         pending: vec![],
+        row_pending: vec![],
         online: true,
         message: String::new(),
         last_sync: Some("12:00".into()),
@@ -183,7 +189,7 @@ fn build_view(s: &Inner) -> View {
             online: s.online,
             message: s.message.clone(),
             last_sync: s.last_sync.clone(),
-            pending: s.pending.len(),
+            pending: s.pending.len() + s.row_pending.len(),
             account: s.account.clone(),
             rows_left: None,
             configured,
@@ -203,6 +209,7 @@ fn build_view(s: &Inner) -> View {
         volume: vec![],
         review: None,
         settings: None,
+        rowing: rowing::Rowing::default(),
     };
     let Some(base) = &s.data else { return view };
     let mut data = base.clone();
@@ -213,6 +220,13 @@ fn build_view(s: &Inner) -> View {
         match p.row.and_then(|r| log.iter().position(|e| e.row == Some(r))) {
             Some(i) => log[i] = q,
             None => log.push(q),
+        }
+    }
+    for p in &s.row_pending {
+        let q = RowSession { queued: true, ..p.clone() };
+        match p.row.and_then(|r| data.rowing.iter().position(|e| e.row == Some(r))) {
+            Some(i) => data.rowing[i] = q,
+            None => data.rowing.push(q),
         }
     }
     let engine = Engine::new(&data.settings);
@@ -277,6 +291,7 @@ fn build_view(s: &Inner) -> View {
     view.volume = suggest::volume(&data, &engine, today);
     view.review = Some(suggest::review(&data, &analysis, today));
     view.settings = Some(data.settings.clone());
+    view.rowing = rowing::rowing(&data.rowing, data.rowing_tab, date);
     view
 }
 
@@ -382,13 +397,43 @@ fn same_entry(a: &LogEntry, b: &LogEntry) -> bool {
     a.date == b.date && a.exercise == b.exercise && (!a.is_mark() || a.workout == b.workout)
 }
 
-/// Queue one exercise. Already queued for that date? Replace it, keeping the row
+/// Something that waits in a local queue until it's in the sheet: a logged exercise
+/// or a rowing session (one per date).
+trait Queued: Clone + PartialEq {
+    fn same(&self, other: &Self) -> bool;
+    fn row(&self) -> Option<usize>;
+    fn set_row(&mut self, row: Option<usize>);
+}
+impl Queued for LogEntry {
+    fn same(&self, other: &Self) -> bool {
+        same_entry(self, other)
+    }
+    fn row(&self) -> Option<usize> {
+        self.row
+    }
+    fn set_row(&mut self, row: Option<usize>) {
+        self.row = row;
+    }
+}
+impl Queued for RowSession {
+    fn same(&self, other: &Self) -> bool {
+        self.date == other.date
+    }
+    fn row(&self) -> Option<usize> {
+        self.row
+    }
+    fn set_row(&mut self, row: Option<usize>) {
+        self.row = row;
+    }
+}
+
+/// Queue one entry. Already queued for that date? Replace it, keeping the row
 /// it targets. Otherwise add it (row Some = edit that row, None = new row).
-fn enqueue(pending: &mut Vec<LogEntry>, e: LogEntry) {
-    match pending.iter_mut().find(|p| same_entry(p, &e)) {
+fn enqueue<T: Queued>(pending: &mut Vec<T>, mut e: T) {
+    match pending.iter_mut().find(|p| p.same(&e)) {
         Some(p) => {
-            let row = p.row.or(e.row);
-            *p = LogEntry { row, ..e };
+            e.set_row(p.row().or(e.row()));
+            *p = e;
         }
         None => pending.push(e),
     }
@@ -396,15 +441,15 @@ fn enqueue(pending: &mut Vec<LogEntry>, e: LogEntry) {
 
 /// After a send: drop exactly what was sent. Anything changed meanwhile stays,
 /// and a new entry that has just been appended turns into an edit of its new row.
-fn settle(pending: &mut Vec<LogEntry>, sent: &[LogEntry], new_rows: &[(LogEntry, usize)]) {
+fn settle<T: Queued>(pending: &mut Vec<T>, sent: &[T], new_rows: &[(T, usize)]) {
     for done in sent {
         if let Some(i) = pending.iter().position(|p| p == done) {
             pending.remove(i);
         }
     }
-    for p in pending.iter_mut().filter(|p| p.row.is_none()) {
-        if let Some((_, row)) = new_rows.iter().find(|(e, _)| same_entry(e, p)) {
-            p.row = Some(*row);
+    for p in pending.iter_mut().filter(|p| p.row().is_none()) {
+        if let Some((_, row)) = new_rows.iter().find(|(e, _)| e.same(p)) {
+            p.set_row(Some(*row));
         }
     }
 }
@@ -414,13 +459,13 @@ fn settle(pending: &mut Vec<LogEntry>, sent: &[LogEntry], new_rows: &[(LogEntry,
 /// in flight survives, retargeted at the row its entry just got. Returns a
 /// message for the status bar ("" when everything went).
 async fn send_pending(state: &AppState, client: &sheets::Client) -> String {
+    let mut errors = send_rowing(state, client).await;
     let pending = state.0.lock().unwrap().pending.clone();
     if pending.is_empty() {
-        return String::new();
+        return if errors.is_empty() { String::new() } else { format!("Couldn't save to the sheet: {}", errors.join("; ")) };
     }
     let mut sent: Vec<LogEntry> = Vec::new();
     let mut new_rows: Vec<(LogEntry, usize)> = Vec::new();
-    let mut errors: Vec<String> = Vec::new();
     for e in pending.iter().filter(|e| e.row.is_some()) {
         match client.update_row(e).await {
             Ok(()) => sent.push(e.clone()),
@@ -443,6 +488,94 @@ async fn send_pending(state: &AppState, client: &sheets::Client) -> String {
     settle(&mut s.pending, &sent, &new_rows);
     s.save_pending();
     if errors.is_empty() { String::new() } else { format!("Couldn't save to the sheet: {}", errors.join("; ")) }
+}
+
+/// `send_pending` for queued rowing sessions. Returns the errors.
+async fn send_rowing(state: &AppState, client: &sheets::Client) -> Vec<String> {
+    let pending = state.0.lock().unwrap().row_pending.clone();
+    let (mut sent, mut new_rows, mut errors) = (Vec::new(), Vec::new(), Vec::new());
+    for e in pending.iter().filter(|e| e.row.is_some()) {
+        match client.update_rowing(e).await {
+            Ok(()) => sent.push(e.clone()),
+            Err(err) => errors.push(format!("Rowing on {}: {err:#}", e.date)),
+        }
+    }
+    let appends: Vec<RowSession> = pending.iter().filter(|e| e.row.is_none()).cloned().collect();
+    if !appends.is_empty() {
+        match client.append_rowing(&appends).await {
+            Ok(first) => {
+                for (k, e) in appends.into_iter().enumerate() {
+                    new_rows.push((e.clone(), first + k));
+                    sent.push(e);
+                }
+            }
+            Err(err) => errors.push(format!("Rowing: {err:#}")),
+        }
+    }
+    if !sent.is_empty() {
+        let mut s = state.0.lock().unwrap();
+        settle(&mut s.row_pending, &sent, &new_rows);
+        s.save_pending();
+    }
+    errors
+}
+
+#[derive(Deserialize)]
+pub struct NewRow {
+    date: String,
+    /// Piece times in seconds.
+    pieces: Vec<Option<f64>>,
+    rest_min: Option<f64>,
+    spm: Option<f64>,
+    hr: Option<f64>,
+    #[serde(default)]
+    notes: String,
+    #[serde(default)]
+    row: Option<usize>,
+}
+
+/// Save a rowing session (one per date): appended, or its row updated in place.
+#[tauri::command]
+async fn save_row(state: State<'_, AppState>, entry: NewRow) -> Result<View, String> {
+    {
+        let date = NaiveDate::parse_from_str(&entry.date, "%Y-%m-%d").map_err(|_| format!("bad date {}", entry.date))?;
+        let mut pieces = [None; 3];
+        for (i, v) in entry.pieces.into_iter().take(3).enumerate() {
+            pieces[i] = v.filter(|&x| x > 0.0);
+        }
+        if pieces.iter().all(|p| p.is_none()) {
+            return Err("Enter at least one piece time.".into());
+        }
+        let mut s = state.0.lock().unwrap();
+        // Already logged that day (another computer, or before an app restart)? Edit that row.
+        let row = entry.row.or_else(|| s.data.as_ref().and_then(|d| d.rowing.iter().find(|r| r.date == date)).and_then(|r| r.row));
+        let e = RowSession { date, pieces, rest_min: entry.rest_min, spm: entry.spm, hr: entry.hr, notes: entry.notes.trim().to_string(), row, queued: false };
+        enqueue(&mut s.row_pending, e);
+        s.save_pending();
+    }
+    sync(&state).await;
+    Ok(build_view(&state.0.lock().unwrap()))
+}
+
+/// Delete a rowing session: drop it from the queue, or clear its row in the sheet.
+#[tauri::command]
+async fn delete_row(state: State<'_, AppState>, row: Option<usize>, date: String) -> Result<View, String> {
+    let date = NaiveDate::parse_from_str(&date, "%Y-%m-%d").map_err(|_| format!("bad date {date}"))?;
+    {
+        let mut s = state.0.lock().unwrap();
+        s.row_pending.retain(|p| p.date != date);
+        s.save_pending();
+        if row.is_none() {
+            return Ok(build_view(&s));
+        }
+    }
+    let config = state.0.lock().unwrap().config.clone();
+    let Source::Sheets(client) = source(&config)? else {
+        return Err("Snapshot mode is read-only. Connect to the Google Sheet to delete entries.".into());
+    };
+    client.clear_rowing(row.unwrap(), date).await.map_err(|e| format!("{e:#}"))?;
+    sync(&state).await;
+    Ok(build_view(&state.0.lock().unwrap()))
 }
 
 #[derive(Deserialize)]
@@ -516,6 +649,7 @@ async fn mark_complete(state: State<'_, AppState>, date: String, workout: String
 fn discard_pending(state: State<'_, AppState>) -> View {
     let mut s = state.0.lock().unwrap();
     s.pending.clear();
+    s.row_pending.clear();
     s.save_pending();
     build_view(&s)
 }
@@ -579,6 +713,27 @@ mod tests {
         let sent = vec![mark("Pull")];
         settle(&mut q, &sent, &[(mark("Pull"), 90)]);
         assert_eq!(q, vec![mark("Morning")]);
+    }
+
+    #[test]
+    fn a_rowing_session_is_queued_once_per_day() {
+        let row = |p1: f64, row: Option<usize>| RowSession {
+            date: NaiveDate::from_ymd_opt(2026, 10, 28).unwrap(),
+            pieces: [Some(p1), Some(704.0), None],
+            rest_min: Some(3.0),
+            spm: None,
+            hr: None,
+            notes: String::new(),
+            row,
+            queued: false,
+        };
+        let mut q = vec![];
+        enqueue(&mut q, row(702.0, None));
+        enqueue(&mut q, row(701.0, None));
+        assert_eq!(q, vec![row(701.0, None)]);
+        // Appended at row 5 while being edited: the edit targets row 5.
+        settle(&mut q, &[row(702.0, None)], &[(row(702.0, None), 5)]);
+        assert_eq!(q, vec![row(701.0, Some(5))]);
     }
 
     #[test]
@@ -899,12 +1054,14 @@ pub fn run() {
             adopt_key(&mut config, &dir);
             let data: Option<Data> = if config.mode == "sheets" { read_json(&dir.join("cache.json")) } else { None };
             let pending: Vec<LogEntry> = read_json(&dir.join("pending.json")).unwrap_or_default();
+            let row_pending: Vec<RowSession> = read_json(&dir.join("rowing-pending.json")).unwrap_or_default();
             app.manage(AppState(Mutex::new(Inner {
                 dir,
                 view_date: None,
                 config,
                 data,
                 pending,
+                row_pending,
                 online: false,
                 message: String::new(),
                 last_sync: None,
@@ -912,7 +1069,7 @@ pub fn run() {
             }), tauri::async_runtime::Mutex::new(())));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![load, save_entry, mark_complete, discard_pending, save_config, data_dir, check_update, install_update, set_equipment, set_slot, add_slot, swap_slot, set_slot_sets, remove_slot, set_session_order, delete_entry, start_deload, import_file, platform_info])
+        .invoke_handler(tauri::generate_handler![load, save_entry, mark_complete, discard_pending, save_config, data_dir, check_update, install_update, set_equipment, set_slot, add_slot, swap_slot, set_slot_sets, remove_slot, set_session_order, delete_entry, start_deload, import_file, platform_info, save_row, delete_row])
         .run(tauri::generate_context!())
         .expect("error while running the app");
 }

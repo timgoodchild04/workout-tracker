@@ -95,6 +95,12 @@ input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accen
 .cards { display: grid; gap: 12px; }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px 18px; display: grid; gap: 10px; }
 .card.logged { background: color-mix(in srgb, var(--good) 5%, var(--surface)); }
+/* Rowing: styled like an exercise card but kept out of the lifting cards' auto-save. */
+.row-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px 18px; display: grid; gap: 10px; margin-bottom: 16px; }
+.row-card.logged { background: color-mix(in srgb, var(--good) 5%, var(--surface)); }
+.entry input.time { width: 92px; }
+.notes-field input { flex: 1; }
+.bad-text { color: var(--bad); }
 .card.done { border-color: color-mix(in srgb, var(--good) 45%, var(--line)); }
 /* Session marked complete: what wasn't logged is left behind. */
 .cards.closed .card:not(.logged) { opacity: 0.55; }

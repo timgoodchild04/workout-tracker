@@ -40,6 +40,16 @@ pub const RANGE_LOG: &str = "A2:H2000";
 /// the session counts as done even with exercises left unlogged.
 pub const SESSION_COMPLETE: &str = "✓ Session complete";
 
+/// 🚣 Rowing: one session per row. The app writes A:H (Date, Piece 1-3, Rest, SPM,
+/// Avg HR, Notes); I:K (total metres, average split, watts) are ARRAYFORMULAs in row 2.
+/// The app adds the tab the first time a row is saved.
+pub const TAB_ROWING: &str = "🚣 Rowing";
+pub const RANGE_ROWING: &str = "A2:H2000";
+pub const ROWING_FIRST_ROW: usize = 2;
+pub const ROWING_LAST_ROW: usize = 2000;
+/// Every piece is a 3000m piece.
+pub const PIECE_M: f64 = 3000.0;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Cell {
     Empty,
@@ -234,6 +244,66 @@ pub struct Data {
     /// Sessions marked complete (📝 Workout Log rows named SESSION_COMPLETE), kept out of `log`.
     #[serde(default)]
     pub marks: Vec<LogEntry>,
+    /// 🚣 Rowing sessions, in sheet order.
+    #[serde(default)]
+    pub rowing: Vec<RowSession>,
+    /// The sheet has a 🚣 Rowing tab yet.
+    #[serde(default)]
+    pub rowing_tab: bool,
+}
+
+/// One rowing session: up to three 3000m pieces, timed in seconds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RowSession {
+    pub date: NaiveDate,
+    pub pieces: [Option<f64>; 3],
+    /// Rest between pieces, minutes.
+    pub rest_min: Option<f64>,
+    /// Average strokes per minute.
+    pub spm: Option<f64>,
+    /// Average heart rate (from the watch).
+    pub hr: Option<f64>,
+    pub notes: String,
+    /// Sheet row; in the local queue None = append, Some = edit that row.
+    pub row: Option<usize>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub queued: bool,
+}
+
+/// A piece time in seconds from a cell: a Sheets duration (fraction of a day), plain
+/// seconds, or text like "11:42.3" / "0:11:42".
+pub fn parse_secs(c: &Cell) -> Option<f64> {
+    match c {
+        Cell::Num(n) if *n > 0.0 && *n < 1.0 => Some(n * 86400.0),
+        Cell::Num(n) if *n >= 1.0 => Some(*n),
+        Cell::Str(s) => {
+            let parts: Vec<f64> = s.trim().split(':').map(|p| p.trim().parse::<f64>()).collect::<Result<_, _>>().ok()?;
+            let secs = parts.iter().fold(0.0, |a, p| a * 60.0 + p);
+            (parts.len() > 1 && secs > 0.0).then_some(secs)
+        }
+        _ => None,
+    }
+}
+
+/// 🚣 Rowing A2:H… as sessions (rows without a date or a piece are skipped).
+pub fn rowing_from_grid(g: &Grid) -> Vec<RowSession> {
+    (0..g.len())
+        .filter_map(|i| {
+            let c = |col: usize| at(g, i, col);
+            let date = parse_date(c(0))?;
+            let pieces = [parse_secs(c(1)), parse_secs(c(2)), parse_secs(c(3))];
+            pieces.iter().any(|p| p.is_some()).then(|| RowSession {
+                date,
+                pieces,
+                rest_min: c(4).num(),
+                spm: c(5).num(),
+                hr: c(6).num(),
+                notes: c(7).text(),
+                row: Some(i + ROWING_FIRST_ROW),
+                queued: false,
+            })
+        })
+        .collect()
 }
 
 impl Data {
@@ -421,6 +491,6 @@ impl Data {
         let deload_every = at(plan_settings, 0, 4).num().unwrap_or(6.0);
         let mut deloads: Vec<NaiveDate> = (0..plan.len()).filter_map(|i| parse_date(at(plan, i, 19))).collect();
         deloads.sort();
-        Data { settings, library, plan: slots, days, targets, session_order, deload_every, deloads, schedule, log, marks }
+        Data { settings, library, plan: slots, days, targets, session_order, deload_every, deloads, schedule, log, marks, rowing: vec![], rowing_tab: false }
     }
 }

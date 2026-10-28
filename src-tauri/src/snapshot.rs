@@ -61,7 +61,13 @@ pub fn load(path: &Path) -> Result<Data> {
     let settings = grid(TAB_SETTINGS, RANGE_SETTINGS, &[])?;
     let schedule = grid(TAB_SCHEDULE, RANGE_SCHEDULE, &[])?;
     let log = grid(TAB_LOG, RANGE_LOG, &[])?;
-    Ok(Data::from_grids(&library, &plan, &plan_settings, &settings, &schedule, &log))
+    let rowing = grid(TAB_ROWING, RANGE_ROWING, &[]).ok();
+    let mut data = Data::from_grids(&library, &plan, &plan_settings, &settings, &schedule, &log);
+    if let Some(r) = rowing {
+        data.rowing = rowing_from_grid(&r);
+        data.rowing_tab = true;
+    }
+    Ok(data)
 }
 
 /// Cached values of arbitrary log columns (used by the parity test).

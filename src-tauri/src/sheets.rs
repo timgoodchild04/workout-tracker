@@ -2,8 +2,8 @@
 //! copied to each computer; the sheet is shared with the account's email).
 //!
 //! The app only ever WRITES columns A:H of the next empty row(s) on the
-//! 📝 Workout Log tab. Everything else is read-only; the sheet's own formulas
-//! keep working on the rows the app writes.
+//! 📝 Workout Log tab (plus the plan and kit switches, and the 🚣 Rowing tab, which
+//! it creates). The sheet's own formulas keep working on the rows the app writes.
 
 use crate::model::*;
 use anyhow::{anyhow, bail, Context, Result};
@@ -131,23 +131,161 @@ impl Client {
     }
 
     pub async fn fetch(&self) -> Result<Data> {
-        let g = self
-            .batch_get(
-                &[
-                    q(TAB_LIBRARY, RANGE_LIBRARY),
-                    q(TAB_PLAN, RANGE_PLAN),
-                    q(TAB_PLAN, RANGE_PLAN_SETTINGS),
-                    q(TAB_SETTINGS, RANGE_SETTINGS),
-                    q(TAB_SCHEDULE, RANGE_SCHEDULE),
-                    q(TAB_LOG, RANGE_LOG),
-                ],
-                "UNFORMATTED_VALUE",
-            )
-            .await?;
+        let mut ranges = vec![
+            q(TAB_LIBRARY, RANGE_LIBRARY),
+            q(TAB_PLAN, RANGE_PLAN),
+            q(TAB_PLAN, RANGE_PLAN_SETTINGS),
+            q(TAB_SETTINGS, RANGE_SETTINGS),
+            q(TAB_SCHEDULE, RANGE_SCHEDULE),
+            q(TAB_LOG, RANGE_LOG),
+            q(TAB_ROWING, RANGE_ROWING),
+        ];
+        // No 🚣 Rowing tab until the first row is saved: read without it.
+        let g = match self.batch_get(&ranges, "UNFORMATTED_VALUE").await {
+            Err(e) if e.to_string().contains(TAB_ROWING) => {
+                ranges.pop();
+                self.batch_get(&ranges, "UNFORMATTED_VALUE").await?
+            }
+            other => other?,
+        };
         if g.len() < 6 {
             bail!("the sheet didn't return the expected tabs");
         }
-        Ok(Data::from_grids(&g[0], &g[1], &g[2], &g[3], &g[4], &g[5]))
+        let mut data = Data::from_grids(&g[0], &g[1], &g[2], &g[3], &g[4], &g[5]);
+        if let Some(rowing) = g.get(6) {
+            data.rowing = rowing_from_grid(rowing);
+            data.rowing_tab = true;
+        }
+        Ok(data)
+    }
+
+    async fn put(&self, range: &str, values: Value) -> Result<()> {
+        let res = self
+            .http
+            .put(format!("{API}/{}/values/{}", self.sheet_id, urlencoding::encode(range)))
+            .bearer_auth(self.token().await?)
+            .query(&[("valueInputOption", "USER_ENTERED")])
+            .json(&json!({ "range": range, "majorDimension": "ROWS", "values": values }))
+            .send()
+            .await?;
+        Self::check(res).await?;
+        Ok(())
+    }
+
+    async fn batch_update(&self, requests: Value) -> Result<Value> {
+        let res = self
+            .http
+            .post(format!("{API}/{}:batchUpdate", self.sheet_id))
+            .bearer_auth(self.token().await?)
+            .json(&json!({ "requests": requests }))
+            .send()
+            .await?;
+        Self::check(res).await
+    }
+
+    /// Add the 🚣 Rowing tab (headers, formulas, formats) if the sheet hasn't got one.
+    pub async fn ensure_rowing_tab(&self) -> Result<()> {
+        let res = self
+            .http
+            .get(format!("{API}/{}", self.sheet_id))
+            .bearer_auth(self.token().await?)
+            .query(&[("fields", "sheets.properties.title")])
+            .send()
+            .await?;
+        let meta = Self::check(res).await?;
+        let exists = meta["sheets"].as_array().is_some_and(|a| a.iter().any(|s| s["properties"]["title"] == TAB_ROWING));
+        if exists {
+            return Ok(());
+        }
+        let added = self
+            .batch_update(json!([{ "addSheet": { "properties": {
+                "title": TAB_ROWING,
+                "gridProperties": { "rowCount": ROWING_LAST_ROW, "columnCount": 11, "frozenRowCount": 1 }
+            } } }]))
+            .await?;
+        let id = added["replies"][0]["addSheet"]["properties"]["sheetId"].as_i64().ok_or_else(|| anyhow!("Google didn't say which tab it added"))?;
+        let last = ROWING_LAST_ROW;
+        let m = PIECE_M;
+        self.put(
+            &q(TAB_ROWING, "A1:K2"),
+            json!([
+                ["Date", "Piece 1", "Piece 2", "Piece 3", "Rest (min)", "SPM", "Avg HR", "Notes", "Total m", "Avg split /500m", "Watts"],
+                ["", "", "", "", "", "", "", "",
+                 format!("=ARRAYFORMULA(IF(A2:A{last}=\"\",,{m}*((B2:B{last}<>\"\")+(C2:C{last}<>\"\")+(D2:D{last}<>\"\"))))"),
+                 format!("=ARRAYFORMULA(IF(A2:A{last}=\"\",,(B2:B{last}+C2:C{last}+D2:D{last})/(I2:I{last}/500)))"),
+                 format!("=ARRAYFORMULA(IF(A2:A{last}=\"\",,ROUND(2.8/(J2:J{last}*86400/500)^3,0)))")]
+            ]),
+        )
+        .await?;
+        let fmt = |c0: i64, c1: i64, kind: &str, pattern: &str| {
+            json!({ "repeatCell": {
+                "range": { "sheetId": id, "startRowIndex": 1, "startColumnIndex": c0, "endColumnIndex": c1 },
+                "cell": { "userEnteredFormat": { "numberFormat": { "type": kind, "pattern": pattern } } },
+                "fields": "userEnteredFormat.numberFormat"
+            } })
+        };
+        self.batch_update(json!([
+            fmt(0, 1, "DATE", "ddd dd/mm/yyyy"),
+            fmt(1, 4, "TIME", "[m]:ss.0"),
+            fmt(9, 10, "TIME", "[m]:ss.0"),
+            { "repeatCell": {
+                "range": { "sheetId": id, "startRowIndex": 0, "endRowIndex": 1 },
+                "cell": { "userEnteredFormat": { "textFormat": { "bold": true } } },
+                "fields": "userEnteredFormat.textFormat.bold"
+            } }
+        ]))
+        .await?;
+        Ok(())
+    }
+
+    fn rowing_values(e: &RowSession) -> Value {
+        // Pieces go in as durations (fractions of a day) so the sheet shows m:ss.0.
+        let opt = |v: Option<f64>| v.map(|x| json!(x)).unwrap_or(json!(""));
+        let piece = |i: usize| e.pieces[i].map(|s| json!(s / 86400.0)).unwrap_or(json!(""));
+        json!([e.date.format("%Y-%m-%d").to_string(), piece(0), piece(1), piece(2), opt(e.rest_min), opt(e.spm), opt(e.hr), e.notes])
+    }
+
+    /// Check a 🚣 Rowing row still holds `date` before changing it.
+    async fn check_rowing_row(&self, row: usize, date: chrono::NaiveDate) -> Result<()> {
+        let got = self.batch_get(&[q(TAB_ROWING, &format!("A{row}"))], "UNFORMATTED_VALUE").await?;
+        let d = got.first().and_then(|g| g.first()).and_then(|r| r.first()).and_then(parse_date);
+        if d != Some(date) {
+            bail!("row {row} of 🚣 Rowing no longer holds the row on {date}. Sync and try again.");
+        }
+        Ok(())
+    }
+
+    /// Overwrite A:H of a logged rowing session, after checking the row.
+    pub async fn update_rowing(&self, e: &RowSession) -> Result<()> {
+        let row = e.row.ok_or_else(|| anyhow!("no row to update"))?;
+        self.check_rowing_row(row, e.date).await?;
+        self.put(&q(TAB_ROWING, &format!("A{row}:H{row}")), json!([Self::rowing_values(e)])).await
+    }
+
+    /// Clear A:H of a logged rowing session (a delete), after checking the row.
+    pub async fn clear_rowing(&self, row: usize, date: chrono::NaiveDate) -> Result<()> {
+        self.check_rowing_row(row, date).await?;
+        self.put(&q(TAB_ROWING, &format!("A{row}:H{row}")), json!([["", "", "", "", "", "", "", ""]])).await
+    }
+
+    /// Write sessions into the first empty rows after the last one (column A re-read
+    /// first). Adds the tab if it isn't there yet. Returns the first row written.
+    pub async fn append_rowing(&self, entries: &[RowSession]) -> Result<usize> {
+        if entries.is_empty() {
+            return Ok(0);
+        }
+        self.ensure_rowing_tab().await?;
+        let col = self.batch_get(&[q(TAB_ROWING, &format!("A{ROWING_FIRST_ROW}:A{ROWING_LAST_ROW}"))], "UNFORMATTED_VALUE").await?;
+        let col = col.first().cloned().unwrap_or_default();
+        let last = col.iter().rposition(|r| r.first().is_some_and(|c| !c.is_empty()));
+        let first_row = last.map_or(ROWING_FIRST_ROW, |i| i + ROWING_FIRST_ROW + 1);
+        let last_row = first_row + entries.len() - 1;
+        if last_row > ROWING_LAST_ROW {
+            bail!("🚣 Rowing is full (row {ROWING_LAST_ROW}). Extend its formulas in the sheet first.");
+        }
+        let values: Vec<Value> = entries.iter().map(Self::rowing_values).collect();
+        self.put(&q(TAB_ROWING, &format!("A{first_row}:H{last_row}")), json!(values)).await?;
+        Ok(first_row)
     }
 
     /// Set one cell to `value`, but only if `check_a1` (same tab) still reads `expect`.
