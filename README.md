@@ -41,9 +41,13 @@ used; it keeps its name only so app versions before 0.3.0 still sync until they 
   back suggests about 85% of the load you used last (the nearest buildable load at or below
   it), and the plate plan loads for that. Loads under 10kg aren't eased. From then on the
   usual progression builds you back up from what you actually did.
-- **Warm-ups.** Plate-loaded compound lifts (presses, rows, pull-ups, squats, lunges, hinges)
-  of 10kg or more list warm-up sets: empty bar ×10 (barbell only), about 50% ×8 and 75% ×5,
-  each with its plates.
+- **Warm-ups.** Plate-loaded compound lifts (presses, rows, squats, lunges, hinges) list a few
+  light warm-up sets, in a dashed box so they don't read as the target: none under 20kg, about
+  50% ×8 from 20kg, plus 75% ×4 from 40kg, and from 60kg the empty bar ×10 (barbell only), 50% ×6
+  and 75% ×3. Each rounds down to loadable plates; a set that matches another or the working
+  load is dropped. A lift already warmed up earlier in the session (same pattern or muscle at
+  a similar or heavier load, e.g. overhead press after bench) skips them. Thresholds,
+  percentages and reps live in `WARMUP` in `coach.rs`.
 - **Rest timer.** Entering a set starts a countdown at the bottom: 2½ minutes for compound
   lifts, 90 seconds for isolation work, 60 seconds for core. +30s or Skip; it beeps at zero.
 - **Personal bests.** An entry that beats every earlier one for that exercise (heavier, or more

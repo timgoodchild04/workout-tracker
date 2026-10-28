@@ -212,6 +212,10 @@ pub struct Card {
     pub ease_back: Option<EaseBack>,
     /// Warm-up sets before the working sets (plate-loaded compound lifts only).
     pub warmups: Vec<WarmUp>,
+    /// Other cards in this session that warm this lift up (same pattern or muscle, similar
+    /// or heavier load). Which of them comes first depends on the order shown, so the
+    /// Today screen decides whether `warmups` are still needed.
+    pub warmed_by: Vec<usize>,
     /// Rest between sets for the Today screen's timer.
     pub rest_secs: u32,
     /// The card's date is in a deload week (its sets are already cut).
@@ -259,25 +263,64 @@ pub struct WarmUp {
     pub text: String,
 }
 
-/// Warm-ups for a working load: empty bar (barbell only), then about 50% and 75%,
-/// each at or below the target, each heavier than the last and lighter than the work.
-/// None for light work (under 10kg), where warming up with weight adds nothing.
-pub fn warmups(engine: &Engine, load_type: &str, equipment: &str, working: f64) -> Vec<WarmUp> {
-    if !(load_type == BARBELL || load_type == DUMBBELL) || working < 10.0 {
+/// Warm-ups for working loads from `from_kg` up to the next tier.
+pub struct WarmupTier {
+    pub from_kg: f64,
+    /// Reps with the empty bar first (barbell only); None = no empty-bar set.
+    pub empty_bar_reps: Option<u32>,
+    /// (share of the working load, reps), lightest first.
+    pub sets: &'static [(f64, u32)],
+}
+
+pub struct WarmupConfig {
+    /// Below the lightest tier there are no warm-ups.
+    pub tiers: &'static [WarmupTier],
+    /// An earlier lift covers this one's warm-up when its load is at least this share of this one's.
+    pub covered_share: f64,
+}
+
+/// Warm-up thresholds, percentages and reps: tweak here, not in `warmups`.
+pub const WARMUP: WarmupConfig = WarmupConfig {
+    tiers: &[
+        WarmupTier { from_kg: 20.0, empty_bar_reps: None, sets: &[(0.5, 8)] },
+        WarmupTier { from_kg: 40.0, empty_bar_reps: None, sets: &[(0.5, 8), (0.75, 4)] },
+        WarmupTier { from_kg: 60.0, empty_bar_reps: Some(10), sets: &[(0.5, 6), (0.75, 3)] },
+    ],
+    covered_share: 0.9,
+};
+
+/// Warm-ups for a plate-loaded compound lift, by the `WARMUP` tier its working load falls in.
+/// Each set is rounded down to a buildable load (the empty bar if that's heavier), and must be
+/// heavier than the one before and lighter than the work, so duplicates drop out.
+pub fn warmups(engine: &Engine, pattern: &str, load_type: &str, equipment: &str, working: f64) -> Vec<WarmUp> {
+    if !COMPOUND_PATTERNS.contains(&pattern) || !(load_type == BARBELL || load_type == DUMBBELL) {
         return vec![];
     }
+    let Some(tier) = WARMUP.tiers.iter().filter(|t| working >= t.from_kg - 1e-9).max_by(|a, b| a.from_kg.partial_cmp(&b.from_kg).unwrap()) else {
+        return vec![];
+    };
+    let bar = engine.settings.bar_weight;
     let mut out: Vec<WarmUp> = Vec::new();
-    if load_type == BARBELL {
-        out.push(WarmUp { label: "Empty bar".into(), reps: 10, kg: engine.settings.bar_weight, text: "no plates".into() });
+    if let (BARBELL, Some(reps)) = (load_type, tier.empty_bar_reps) {
+        if bar < working - 1e-9 {
+            out.push(WarmUp { label: "Empty bar".into(), reps, kg: bar, text: "no plates".into() });
+        }
     }
-    for (share, reps) in [(0.5, 8), (0.75, 5)] {
+    for &(share, reps) in tier.sets {
         let Some(l) = engine.at_most(load_type, equipment, working * share) else { continue };
         let floor = out.last().map_or(0.0, |w| w.kg);
         if l.kg > floor + 1e-9 && l.kg < working - 1e-9 {
-            out.push(WarmUp { label: format!("{}%", (share * 100.0) as u32), reps, kg: l.kg, text: l.text });
+            let label = if load_type == BARBELL && (l.kg - bar).abs() < 1e-9 { "Empty bar".into() } else { format!("{}%", (share * 100.0) as u32) };
+            out.push(WarmUp { label, reps, kg: l.kg, text: l.text });
         }
     }
     out
+}
+
+/// Does `earlier` warm up the muscles `later` needs? Same movement pattern, or it works
+/// `later`'s main muscle (bench press works the shoulders, so it covers overhead press).
+pub fn warms_up(earlier: &LibEx, later: &LibEx) -> bool {
+    earlier.pattern == later.pattern || earlier.primary == later.primary || earlier.secondary.contains(&later.primary)
 }
 
 /// For each log entry: does it beat every earlier entry of the same exercise?
@@ -325,6 +368,7 @@ pub fn session_cards(data: &Data, engine: &Engine, analysis: &[Analysis], sessio
     let mut cards = Vec::new();
     let mut skipped = Vec::new();
     let pbs = personal_bests(data, analysis);
+    let mut loads: Vec<(&LibEx, f64)> = Vec::new();
     for slot in data.plan.iter().filter(|s| s.day == session && s.enabled) {
         let Some(lib) = resolve(data, engine, slot) else {
             skipped.push(slot.exercise.clone());
@@ -395,12 +439,15 @@ pub fn session_cards(data: &Data, engine: &Engine, analysis: &[Analysis], sessio
         });
         let compound = COMPOUND_PATTERNS.contains(&lib.pattern.as_str());
         let working = ease_back.as_ref().map_or(recommended_kg, |e| e.kg);
-        let warmups = if compound { warmups(engine, &load_type, equipment, working) } else { vec![] };
+        let warmups = warmups(engine, &lib.pattern, &load_type, equipment, working);
+        // What a later lift would be warmed up by: the weight actually lifted once it's logged.
+        loads.push((lib, logged.as_ref().map_or(working, |l| l.weight)));
         let deload = data.deload_on(date).is_some();
         let rest_secs = if compound { 150 } else if lib.pattern.starts_with("Core") { 60 } else { 90 };
         cards.push(Card {
             ease_back,
             warmups,
+            warmed_by: vec![],
             rest_secs,
             exercise: exercise.clone(),
             original: slot.exercise.clone(),
@@ -427,6 +474,16 @@ pub fn session_cards(data: &Data, engine: &Engine, analysis: &[Analysis], sessio
             instruction,
             logged,
         });
+    }
+    for i in 0..cards.len() {
+        if cards[i].warmups.is_empty() {
+            continue;
+        }
+        let (lib, kg) = loads[i];
+        cards[i].warmed_by = (0..cards.len())
+            .filter(|&j| j != i && cards[j].compound && cards[j].load_type == cards[i].load_type)
+            .filter(|&j| loads[j].1 >= kg * WARMUP.covered_share - 1e-9 && warms_up(loads[j].0, lib))
+            .collect();
     }
     (cards, skipped)
 }
@@ -691,5 +748,101 @@ mod tests {
         data.marks = vec![entry(4, 4, "Legs", SESSION_COMPLETE)];
         let r = rotation(&data, d(10)).unwrap();
         assert_eq!((r.next.as_str(), r.completed), ("Pull", vec![d(4)]));
+    }
+
+    /// A 10kg bar (2kg dumbbell handles) and a home plate set, or no plates at all.
+    fn warmup_engine(bar: f64, plates: bool) -> Engine {
+        use crate::model::{Equipment, Plate, Settings};
+        let owned = |weight, owned| Plate { weight, owned, enabled: plates };
+        let kit = |name: &str, load_type: &str| Equipment { row: 0, name: name.into(), enabled: true, load_type: load_type.into(), notes: String::new() };
+        Engine::new(&Settings {
+            bar_weight: bar,
+            handle_weight: 2.0,
+            plates: vec![owned(5.0, 8.0), owned(2.5, 12.0), owned(1.25, 8.0), owned(0.5, 8.0)],
+            jump_pct: 0.05,
+            jump_abs: 1.0,
+            ceiling_streak: 2.0,
+            drop_pct: 0.1,
+            isolation_rep_low: 10.0,
+            equipment: vec![kit("Barbell", BARBELL), kit("Dumbbells", DUMBBELL), kit("Pull-up bar", BODYWEIGHT)],
+            ladder: vec![],
+        })
+    }
+
+    fn sets(w: &[WarmUp]) -> Vec<(f64, u32)> {
+        w.iter().map(|w| (w.kg, w.reps)).collect()
+    }
+
+    #[test]
+    fn warmups_only_for_plate_loaded_compounds() {
+        let e = warmup_engine(10.0, true);
+        assert!(warmups(&e, "Biceps", DUMBBELL, "Dumbbells", 45.0).is_empty(), "isolation work");
+        assert!(warmups(&e, "Vertical pull", BODYWEIGHT, "Pull-up bar", 45.0).is_empty(), "bodyweight");
+    }
+
+    #[test]
+    fn warmup_sets_scale_with_the_working_load() {
+        let e = warmup_engine(10.0, true);
+        let w = |kg| sets(&warmups(&e, "Horizontal push", BARBELL, "Barbell", kg));
+        assert_eq!(w(15.0), vec![], "under 20kg: none");
+        assert_eq!(w(24.5), vec![(12.0, 8)], "20-40kg: ~50% x8 (12.25 rounds down to 12)");
+        assert_eq!(w(45.0), vec![(22.5, 8), (33.5, 4)], "40-60kg: ~50% x8, ~75% x4");
+        assert_eq!(w(70.0), vec![(10.0, 10), (35.0, 6), (52.5, 3)], "60kg+: empty bar x10, ~50% x6, ~75% x3");
+        assert_eq!(warmups(&e, "Squat", BARBELL, "Barbell", 70.0)[0].label, "Empty bar");
+    }
+
+    #[test]
+    fn warmups_round_to_buildable_loads_and_drop_duplicates() {
+        // 50% of 20.5kg is lighter than the bar: the empty bar instead.
+        let e = warmup_engine(10.0, true);
+        let ws = warmups(&e, "Squat", BARBELL, "Barbell", 20.5);
+        assert_eq!((sets(&ws), ws[0].label.as_str()), (vec![(10.0, 8)], "Empty bar"));
+        // The bar alone is the working load: nothing lighter to warm up with.
+        let e = warmup_engine(20.0, true);
+        assert_eq!(sets(&warmups(&e, "Squat", BARBELL, "Barbell", 20.0)), vec![]);
+        // No plates: 50% and 75% both round to the bar, so it's listed once.
+        let e = warmup_engine(20.0, false);
+        assert_eq!(sets(&warmups(&e, "Squat", BARBELL, "Barbell", 45.0)), vec![(20.0, 8)]);
+        // 60kg+: the empty bar and a 50% that rounds to it don't both appear.
+        assert_eq!(sets(&warmups(&e, "Squat", BARBELL, "Barbell", 70.0)), vec![(20.0, 10)]);
+    }
+
+    #[test]
+    fn an_earlier_lift_on_the_same_muscles_covers_the_warmup() {
+        let mut data = Data::from_grids(&vec![], &vec![], &vec![], &vec![], &vec![], &vec![]);
+        let e = warmup_engine(10.0, true);
+        data.settings = e.settings.clone();
+        let ex = |name: &str, pattern: &str, primary: &str, secondary: &[&str], equipment: &str, kg: f64| LibEx {
+            row: 0,
+            name: name.into(),
+            pattern: pattern.into(),
+            primary: primary.into(),
+            secondary: secondary.iter().map(|m| m.to_string()).collect(),
+            equipment: equipment.into(),
+            sets: 3,
+            rep_low: 6.0,
+            rep_high: 10.0,
+            start_weight: kg,
+            video: String::new(),
+            easier: String::new(),
+            harder: String::new(),
+            fits: vec![],
+            notes: String::new(),
+        };
+        data.library = vec![
+            ex("Bench Press", "Horizontal push", "Chest", &["Shoulders", "Triceps"], "Barbell", 50.0),
+            ex("Overhead Press", "Vertical push", "Shoulders", &["Triceps"], "Barbell", 30.0),
+            ex("Barbell Row", "Horizontal pull", "Upper back", &["Biceps"], "Barbell", 40.0),
+            ex("Curl", "Biceps", "Biceps", &[], "Dumbbells", 20.0),
+        ];
+        data.plan = data.library.iter().enumerate().map(|(row, l)| Slot { row, day: "Push".into(), pattern: l.pattern.clone(), exercise: l.name.clone(), sets: None, enabled: true }).collect();
+        let a = analyse(&data, &e);
+        let (cards, _) = session_cards(&data, &e, &a, "Push", NaiveDate::from_ymd_opt(2026, 11, 2).unwrap());
+        let by = |n: &str| cards.iter().find(|c| c.exercise == n).unwrap();
+        assert!(!by("Overhead Press").warmups.is_empty());
+        assert_eq!(by("Overhead Press").warmed_by, vec![0], "bench works the shoulders at a heavier load");
+        assert_eq!(by("Bench Press").warmed_by, Vec::<usize>::new(), "overhead press is too light to cover bench");
+        assert_eq!(by("Barbell Row").warmed_by, Vec::<usize>::new(), "different muscles");
+        assert!(by("Curl").warmups.is_empty(), "isolation");
     }
 }

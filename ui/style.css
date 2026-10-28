@@ -225,7 +225,8 @@ h2 { font-size: 18px; margin: 28px 0 4px; }
 
 /* Today: easing back in, warm-ups */
 .ease { margin-top: 6px; font-size: 12px; color: var(--text-2); background: var(--new-bg); border-radius: 8px; padding: 6px 8px; }
-.warmup { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; font-size: 13px; margin: 8px 0 2px; }
+.warmup { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; font-size: 13px; margin: 8px 0 2px;
+  color: var(--text-2); border: 1px dashed var(--line); border-radius: 8px; padding: 6px 8px; }
 .warmup .sublabel { width: 100%; }
 .warmup .wu .muted { font-size: 12px; }
 

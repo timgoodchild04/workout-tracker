@@ -295,8 +295,14 @@ function renderToday(el) {
   const { sets: trimmed, dropped } = shortOnTime(sv.cards, order);
   const shown = order.filter((i) => i !== dropped);
   const mark = markOf(v, S.logDate, session);
-  const cards = shown.map((i, pos) => card({ ...sv.cards[i], sets: trimmed.get(i) ?? sv.cards[i].sets }, i, draft[sv.cards[i].exercise], pos + 1, plan?.changes[i] || [])).join("");
-  const left = shown.filter((i) => !sv.cards[i].logged && !mark).map((i) => ({ ...sv.cards[i], sets: trimmed.get(i) ?? sv.cards[i].sets }));
+  // A lift already warmed up by one done earlier (logged, or before it in this order) skips its warm-up.
+  const warmedBy = (i) => sv.cards[i].warmed_by.find((j) => sv.cards[j].logged || (shown.includes(j) && shown.indexOf(j) < shown.indexOf(i)));
+  const shownCard = (i) => {
+    const by = warmedBy(i);
+    return { ...sv.cards[i], sets: trimmed.get(i) ?? sv.cards[i].sets, ...(by != null && { warmups: [], warm_from: sv.cards[by].exercise }) };
+  };
+  const cards = shown.map((i, pos) => card(shownCard(i), i, draft[sv.cards[i].exercise], pos + 1, plan?.changes[i] || [])).join("");
+  const left = shown.filter((i) => !sv.cards[i].logged && !mark).map(shownCard);
   const mins = estimateMinutes(left, plan);
   const timeBar = sv.cards.length ? `<div class="timebar">
       <span>${mark
@@ -384,7 +390,8 @@ function card(c, i, d, pos, changes) {
         ${eb ? `<div class="ease">${eb.days} days since you last did this, so ${num(eb.kg)}kg rather than the usual ${num(c.recommended_kg)}kg. Back to normal progression next time.</div>` : ""}</div>
       <div><div class="sublabel">History</div><div class="last">${last}</div></div>
     </div>
-    ${!lg && c.warmups.length ? `<div class="warmup"><span class="sublabel">Warm-up first</span>${c.warmups.map((w) =>
+    ${!lg && c.warm_from ? `<div class="warmup"><span class="sublabel">No warm-up needed</span><span class="muted">${esc(c.warm_from)} already warmed these muscles up.</span></div>` : ""}
+    ${!lg && c.warmups.length ? `<div class="warmup"><span class="sublabel">Warm-up sets · not your working weight</span>${c.warmups.map((w) =>
       `<span class="wu"><b>${esc(w.label === "Empty bar" ? "Empty bar" : num(w.kg) + "kg")}</b> × ${w.reps}${w.label === "Empty bar" ? "" : `<span class="muted"> · ${esc(w.text.split(" — ")[1] ?? w.text)}</span>`}</span>`).join("")}</div>` : ""}
     ${changes.length ? `<div class="swap"><span class="sublabel">Plates before this exercise</span>${changes.map((x) => `<div class="${x.startsWith("Sleeve now") ? "sleeve" : ""}">${esc(x)}</div>`).join("")}</div>` : ""}
     ${c.notes ? `<div class="cue"><span class="sublabel">Cues</span> ${esc(c.notes)}</div>` : ""}
