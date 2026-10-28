@@ -14,6 +14,7 @@ const S = {
   busy: false,
   update: null,         // { current, latest, notes } from check_update, plus checking / installing / error
   editing: null,        // History row being edited ("date|exercise|row")
+  watch: null,          // last rowing workout read from the watch (Health Connect), with its date
   order: (() => { try { return localStorage.getItem("order") || "best"; } catch { return "best"; } })(),
 };
 
@@ -915,7 +916,9 @@ function renderRowing(el) {
       <label>Rest min<input type="number" min="0" step="0.5" inputmode="decimal" data-k="rest" value="${esc(val("rest", num(logged?.rest_min ?? last?.rest_min)))}"></label>
       <label>SPM<input type="number" min="0" step="1" inputmode="numeric" data-k="spm" value="${esc(val("spm", num(logged?.spm)))}"></label>
       <label title="Average heart rate from your watch's Rowing machine workout summary">Avg HR<input type="number" min="0" step="1" inputmode="numeric" data-k="hr" value="${esc(val("hr", num(logged?.hr)))}"></label>
+      ${IS_ANDROID ? `<button class="copy-btn" type="button" id="from-watch" title="Fill in the heart rate from the watch's rowing workout on this day (Health Connect)">⌚ From watch</button>` : ""}
     </div>
+    <div class="small muted" id="watch-note">${watchNote()}</div>
     <label class="field notes-field">Notes<input type="text" data-k="notes" value="${esc(val("notes", logged?.notes))}" placeholder="Damper, how it felt…"></label>
     <div class="row-inline"><span class="small" id="row-live"></span>
       <button class="btn primary" id="row-save">${logged ? "Update" : "Save"}</button></div>
@@ -953,6 +956,7 @@ function renderRowing(el) {
     inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); saveRow(); } });
   });
   $("#row-save").addEventListener("click", saveRow);
+  $("#from-watch")?.addEventListener("click", fromWatch);
   $$("[data-row-edit]", el).forEach((b) => b.addEventListener("click", () => {
     S.logDate = b.dataset.rowEdit;
     load(false).then(() => { $("#main").scrollTop = 0; $('#row-card [data-k="p0"]')?.focus(); });
@@ -969,6 +973,43 @@ function renderRowing(el) {
     render();
   }));
   if (r.sessions.length > 1) drawRowChart([...r.sessions].reverse());
+}
+
+const IS_ANDROID = /Android/i.test(navigator.userAgent);
+
+/** What the watch's workout said for the date shown ("" if it hasn't been read). */
+function watchNote() {
+  const w = S.watch;
+  if (!w || w.date !== S.logDate) return "";
+  const at = (ms) => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  return `⌚ Watch: rowing ${at(w.start)}–${at(w.end)} (${Math.round((w.end - w.start) / 60000)} min)${
+    w.avg_hr != null ? `, average ${w.avg_hr} bpm, max ${w.max_hr}` : ", no heart rate recorded"}${w.sessions > 1 ? ` · the longest of ${w.sessions} rowing workouts that day` : ""}`;
+}
+
+/** Health Connect (Android): the day's rowing workout from the watch, into Avg HR.
+ *  The first time, Android asks for permission. */
+async function fromWatch() {
+  const date = S.logDate;
+  setBusy(true);
+  try {
+    const w = await invoke("watch_rowing", { date });
+    if (!w.found) {
+      toast(`No rowing workout from the watch on ${fmtDate(date)}. Start "Rowing machine" on the watch when you row.`, 7000);
+    } else {
+      S.watch = { date, ...w };
+      const hr = $('#row-card [data-k="hr"]');
+      if (hr && w.avg_hr != null && S.logDate === date) {
+        hr.value = w.avg_hr;
+        hr.dispatchEvent(new Event("input"));
+      }
+      const note = $("#watch-note");
+      if (note) note.innerHTML = watchNote();
+      if (w.avg_hr == null) toast("Found the watch's rowing workout, but it has no heart rate in it.", 6000);
+    }
+  } catch (e) {
+    toast(String(e), 8000);
+  }
+  setBusy(false);
 }
 
 async function saveRow() {

@@ -1051,6 +1051,52 @@ fn store_key(bytes: &[u8], dir: &std::path::Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// The watch's rowing workout on a date, from Health Connect (Android only).
+#[derive(Serialize, Deserialize, Default)]
+pub struct WatchRow {
+    found: bool,
+    /// Workout start/end, epoch milliseconds.
+    start: Option<i64>,
+    end: Option<i64>,
+    /// Rowing workouts that day (the longest is used).
+    sessions: Option<u32>,
+    samples: Option<u32>,
+    avg_hr: Option<f64>,
+    max_hr: Option<f64>,
+}
+
+/// Health Connect lives in Kotlin (gen/android/…/HealthConnectPlugin.kt); this registers it.
+#[cfg(target_os = "android")]
+struct Health(tauri::plugin::PluginHandle<tauri::Wry>);
+
+#[cfg(target_os = "android")]
+fn health_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    tauri::plugin::Builder::new("healthconnect")
+        .setup(|app, api| {
+            app.manage(Health(api.register_android_plugin("com.timgoodchild.workouttracker", "HealthConnectPlugin")?));
+            Ok(())
+        })
+        .build()
+}
+
+/// The watch's rowing workout on `date` (YYYY-MM-DD, local day). Asks for Health
+/// Connect permission the first time.
+#[tauri::command]
+#[allow(unused_variables)]
+async fn watch_rowing(app: tauri::AppHandle, date: String) -> Result<WatchRow, String> {
+    #[cfg(target_os = "android")]
+    {
+        use chrono::TimeZone;
+        let day = NaiveDate::parse_from_str(&date, "%Y-%m-%d").map_err(|_| format!("bad date {date}"))?;
+        let ms = |d: NaiveDate| Local.from_local_datetime(&d.and_hms_opt(0, 0, 0).unwrap()).earliest().map(|t| t.timestamp_millis()).unwrap_or(0);
+        let args = serde_json::json!({ "start": ms(day), "end": ms(day.succ_opt().unwrap_or(day)) });
+        let health = app.state::<Health>();
+        return health.0.run_mobile_plugin::<WatchRow>("readRowing", args).map_err(|e| e.to_string());
+    }
+    #[cfg(not(target_os = "android"))]
+    Err("Heart rate from the watch comes in on the Android app.".into())
+}
+
 /// Linux desktop details for Settings ("" elsewhere).
 #[tauri::command]
 fn platform_info() -> String {
@@ -1072,6 +1118,8 @@ pub fn run() {
     let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(health_plugin());
     builder
         .setup(|app| {
             #[cfg(target_os = "linux")]
@@ -1097,7 +1145,7 @@ pub fn run() {
             }), tauri::async_runtime::Mutex::new(())));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![load, save_entry, mark_complete, discard_pending, save_config, data_dir, check_update, install_update, set_equipment, set_slot, add_slot, swap_slot, set_slot_sets, remove_slot, set_session_order, delete_entry, start_deload, import_file, platform_info, save_row, delete_row])
+        .invoke_handler(tauri::generate_handler![load, save_entry, mark_complete, discard_pending, save_config, data_dir, check_update, install_update, set_equipment, set_slot, add_slot, swap_slot, set_slot_sets, remove_slot, set_session_order, delete_entry, start_deload, import_file, platform_info, save_row, delete_row, watch_rowing])
         .run(tauri::generate_context!())
         .expect("error while running the app");
 }

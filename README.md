@@ -98,6 +98,12 @@ rate and average heart rate (from the Pixel Watch's *Rowing machine* workout sum
   500m; piece 2 more than 2s/500m slower than piece 1 → hold last time's average on both;
   14+ days since the last row → a second slower. Rules live at the top of `rowing.rs`.
 - A **🏆 PB** is a better average split than every earlier session.
+- **Heart rate from the watch (Android).** Start *Rowing machine* on the Pixel Watch when you
+  row. On the phone, **⌚ From watch** reads that day's rowing workout from Health Connect
+  (the longest, if there's more than one) and fills in Avg HR, showing the workout's times
+  and max HR under the card. The first time, Android asks to allow Workouts and Heart rate;
+  change that later in Settings → Health Connect → App permissions. Read-only: nothing is
+  written to Health Connect. The Kotlin side is `gen/android/…/HealthConnectPlugin.kt`.
 - Rowing doesn't count towards the lifting rotation or the weekly review. A Schedule day whose
   session has "Row" in it (and isn't a lifting session) shows as a rowing day on Today, and
   rest days link to the Rowing tab.
