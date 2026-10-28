@@ -489,6 +489,18 @@ function startRest(cardEl) {
   drawRest();
 }
 
+/** While the timer shows, scroll the row of set fields you're on to just above it,
+ *  whenever the bar appears, focus moves, or the window changes size. */
+function keepClear() {
+  const bar = $("#rest"), el = document.activeElement;
+  if (!bar || !$("#main").contains(el)) return;
+  const row = el.closest(".entry") || el;
+  const overlap = row.getBoundingClientRect().bottom + 12 - bar.getBoundingClientRect().top;
+  if (overlap > 0) $("#main").scrollBy({ top: overlap, behavior: "smooth" });
+}
+document.addEventListener("focusin", keepClear);
+window.addEventListener("resize", keepClear);
+
 function stopRest() {
   if (rest) clearInterval(rest.tick);
   rest = null;
@@ -506,8 +518,7 @@ function drawRest() {
       <button class="btn" id="rest-more">+30s</button><button class="btn" id="rest-skip">Skip</button></div>`);
     bar = $("#rest");
     document.body.classList.add("resting");
-    // Keep the field you're on clear of the bar that just appeared.
-    if ($("#main").contains(document.activeElement)) document.activeElement.scrollIntoView({ block: "nearest" });
+    keepClear();
     $("#rest-more").addEventListener("click", () => { if (rest) { rest.end = Math.max(rest.end, Date.now()) + 30000; drawRest(); } });
     $("#rest-skip").addEventListener("click", stopRest);
   }
